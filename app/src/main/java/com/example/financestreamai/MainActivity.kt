@@ -5,19 +5,18 @@ import android.os.Bundle
 import android.util.Log
 import android.widget.Toast
 import androidx.activity.ComponentActivity
-import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.ExperimentalFoundationApi
-import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.List
-import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -27,6 +26,8 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import com.google.gson.annotations.SerializedName
 import kotlinx.coroutines.launch
@@ -34,397 +35,433 @@ import okhttp3.OkHttpClient
 import okhttp3.logging.HttpLoggingInterceptor
 import retrofit2.Retrofit
 import retrofit2.converter.gson.GsonConverterFactory
-import retrofit2.http.GET
-import retrofit2.http.Query
+import retrofit2.http.*
 import java.util.concurrent.TimeUnit
 
+// ==========================================
+// 1. API DATA MODELS (Matching New Backend)
+// ==========================================
+data class LongLeapsResult(
+    @SerializedName("strike") val strike: Double,
+    @SerializedName("expiry") val expiry: String,
+    @SerializedName("premium") val premium: Double,
+    @SerializedName("delta") val delta: Double,
+    @SerializedName(value = "intrinsic_buffer", alternate = ["intrinsic"]) val intrinsicBuffer: String?,
+    @SerializedName("leverage") val leverage: String?,
+    @SerializedName(value = "bt", alternate = ["bt_success"]) val bt: String?
+)
+
+data class CspResult(
+    @SerializedName("strike") val strike: Double,
+    @SerializedName("premium") val premium: Double,
+    @SerializedName("delta") val delta: Double,
+    @SerializedName(value = "bt", alternate = ["bt_success"]) val bt: String?,
+    @SerializedName(value = "roc", alternate = ["monthly_roc"]) val roc: String?
+)
+
+data class DiagonalResult(
+    @SerializedName(value = "long", alternate = ["long_strike", "long_leg"]) val longLeg: String?,
+    @SerializedName(value = "short", alternate = ["short_strike", "short_leg"]) val shortLeg: String?,
+    @SerializedName(value = "net_debt", alternate = ["net_debit", "debit"]) val netDebt: Double,
+    @SerializedName(value = "yield", alternate = ["yield_ratio"]) val yieldRatio: String?,
+    @SerializedName(value = "bt", alternate = ["bt_success"]) val bt: String?
+)
+
+data class VerticalResult(
+    @SerializedName(value = "strikes", alternate = ["strike"]) val strikes: String?,
+    @SerializedName(value = "net_debit", alternate = ["net_debt", "debit"]) val netDebit: Double,
+    @SerializedName(value = "bt", alternate = ["bt_success"]) val bt: String?
+)
+
+data class ScanResultItem(
+    @SerializedName("ticker") val ticker: String,
+    @SerializedName("price") val price: Double,
+    @SerializedName("rsi") val rsi: Double?,
+    @SerializedName("beta") val beta: Double?,
+    @SerializedName(value = "csps", alternate = ["csp", "csp_results"]) val csps: List<CspResult>?,
+    @SerializedName(value = "diagonals", alternate = ["diagonal", "diagonal_results"]) val diagonals: List<DiagonalResult>?,
+    @SerializedName(value = "verticals", alternate = ["vertical", "vertical_results"]) val verticals: List<VerticalResult>?,
+    @SerializedName(value = "long_leaps", alternate = ["long_leaps_results", "leaps"]) val longLeaps: List<LongLeapsResult>?
+)
+
+data class CapitalHealth(
+    @SerializedName("committed") val committed: Double
+)
+
+data class PerformanceMetrics(
+    @SerializedName("monthly_realized") val monthlyRealized: Double,
+    @SerializedName("monthly_goal_progress") val progress: String
+)
+
+data class ActivePosition(
+    @SerializedName("id") val id: Int? = null,
+    @SerializedName("ticker") val ticker: String,
+    @SerializedName("strategy") val strategy: String,
+    @SerializedName("contracts") val contracts: Int,
+    @SerializedName("strike") val strike: Double,
+    @SerializedName("expiry") val expiry: String,
+    @SerializedName("entry_premium") val entryPremium: Double
+)
+
+data class ClosedPosition(
+    @SerializedName("id") val id: Int? = null,
+    @SerializedName("ticker") val ticker: String,
+    @SerializedName("strategy") val strategy: String,
+    @SerializedName("contracts") val contracts: Int,
+    @SerializedName("strike") val strike: Double,
+    @SerializedName("expiry") val expiry: String,
+    @SerializedName("entry_premium") val entryPremium: Double,
+    @SerializedName("exit_price") val exitPrice: Double,
+    @SerializedName("exit_date") val exitDate: String
+)
+
+data class HealthResponse(
+    @SerializedName("status") val status: String,
+    @SerializedName("capital_health") val capitalHealth: CapitalHealth,
+    @SerializedName("performance") val performance: PerformanceMetrics,
+    @SerializedName("active_positions") val activePositions: List<ActivePosition>,
+    @SerializedName("closed_positions") val closedPositions: List<ClosedPosition>? = emptyList()
+)
+
+data class TradeEntry(
+    val ticker: String, val strike: Double, val expiry: String, val trigger_price: Double,
+    val entry_premium: Double, val contracts: Int, val strategy: String, val is_call: Int, val is_buy: Int,
+    val exit_price: Double? = null, val exit_date: String? = null
+)
+
+// ==========================================
+// 2. RETROFIT API INTERFACE
+// ==========================================
+interface JPFinanceApi {
+    @GET("scan")
+    suspend fun getScanResults(
+        @Query("tickers") tickers: String? = null,
+        @Query("strategy") strategy: String? = null,
+        @Query("target_delta") targetDelta: Double? = null,
+        @Query("min_roc") minRoc: Double? = null
+    ): List<ScanResultItem>
+
+    @GET("health")
+    suspend fun getHealth(): HealthResponse
+
+    @POST("portfolio/add")
+    suspend fun addPosition(@Body trade: TradeEntry): Map<String, Any>
+
+    @DELETE("portfolio/remove/{id}")
+    suspend fun removePosition(@Path("id") id: Int): Map<String, String>
+
+    @POST("portfolio/close/{id}")
+    suspend fun closePosition(@Path("id") id: Int, @Body exitDetails: Map<String, String>): Map<String, String>
+
+    // Future endpoint for saving tuned parameters
+    @POST("settings/update")
+    suspend fun updateSettings(@Body settings: Map<String, String>): Map<String, String>
+}
+
+// Render backend URL. Ensure it ends with a trailing slash.
+val retrofit: Retrofit = Retrofit.Builder()
+    .baseUrl("https://financestreamai-backend.onrender.com/api/v1/")
+    .client(OkHttpClient.Builder()
+        .addInterceptor(HttpLoggingInterceptor().apply { level = HttpLoggingInterceptor.Level.BODY })
+        .connectTimeout(60, TimeUnit.SECONDS)
+        .readTimeout(60, TimeUnit.SECONDS)
+        .build()
+    )
+    .addConverterFactory(GsonConverterFactory.create())
+    .build()
+
+val apiService: JPFinanceApi = retrofit.create(JPFinanceApi::class.java)
+
+// Watchlist Defaults
+val MASTER_WATCHLIST_DEFAULT = listOf("ALAB", "PLTR", "CRWD", "SNOW", "TSLA", "NFLX", "ARM", "MSFT", "META", "NVDA", "MSTR", "SMCI", "APP", "SHOP", "AVGO", "SITM", "HOOD", "CRWV", "IREN", "RDDT", "AMZN", "TSM", "UBER", "COIN", "SNDK", "MU", "WDC", "BE", "NOW", "CRM", "ADBE", "VRT", "TEAM", "NBIS", "CRDO")
+
+// Helper to parse numeric values from strings like "5.4%" or "10.2"
+private fun String?.parseToDouble(): Double {
+    if (this == null) return 0.0
+    return try {
+        // Regex to find the first decimal number in the string
+        val regex = """-?\d+(\.\d+)?""".toRegex()
+        val match = regex.find(this)
+        match?.value?.toDoubleOrNull() ?: 0.0
+    } catch (e: Exception) {
+        0.0
+    }
+}
+
+// ==========================================
+// 3. MAIN ACTIVITY & UI
+// ==========================================
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
             MaterialTheme {
                 Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-                    AlphaStreamDashboard(apiService)
+                    MainScreen()
                 }
             }
         }
     }
 }
 
-// 1. Define what the response from Python looks like
-data class StockResult(
-    @SerializedName("ticker") val ticker: String,
-    @SerializedName(value = "price", alternate = ["current_price", "last_price", "price_at_scan", "last", "price_used"]) val price: Double,
-    @SerializedName(value = "high52", alternate = ["52w_high", "high_52", "high_52w", "52_week_high"]) val high52: Double,
-    @SerializedName(value = "discount_price", alternate = ["target_price", "discount"]) val discount_price: Double,
-    @SerializedName(value = "lower_bb", alternate = ["lower_band", "bb_lower"]) val lower_bb: Double,
-    @SerializedName("rsi") val rsi: Double,
-    @SerializedName(value = "sma200", alternate = ["sma_200", "200_sma", "sma_200_day"]) val sma200: Double,
-    @SerializedName(value = "iv", alternate = ["implied_volatility", "iv_percent"]) val iv: Double,
-    @SerializedName("delta") val delta: Double,
-    @SerializedName("match") val match: Boolean,
-    @SerializedName("buy_distance_usd") val buyDistanceUsd: Double,
-    @SerializedName("buy_distance_pct") val buyDistancePct: Double
-)
-
-// 2. Define the API "Contract"
-interface AlphaStreamApi {
-    @GET("check_multiple")
-    suspend fun checkMultipleStocks(@Query("tickers") tickers: String): List<StockResult>
-}
-
-// 3. Create the Retrofit Instance with increased timeouts and logging
-val logging = HttpLoggingInterceptor { message ->
-    Log.d("AlphaStreamRaw", message)
-}.apply {
-    level = HttpLoggingInterceptor.Level.BODY
-}
-
-val okHttpClient = OkHttpClient.Builder()
-    .addInterceptor(logging)
-    .connectTimeout(60, TimeUnit.SECONDS)
-    .readTimeout(60, TimeUnit.SECONDS)
-    .writeTimeout(60, TimeUnit.SECONDS)
-    .build()
-
-val retrofit = Retrofit.Builder()
-    .baseUrl("https://financestreamai-backend.onrender.com/")
-    .client(okHttpClient)
-    .addConverterFactory(GsonConverterFactory.create())
-    .build()
-
-val apiService = retrofit.create(AlphaStreamApi::class.java)
-
-// Portfolio Constants
-val PORTFOLIO_WATCHLIST_DEFAULT = listOf(
-    "AMZN", "AVGO", "TSM", "NVDA", "CRDO", "ALAB", "CRWV", "IREN", "HOOD", 
-    "SOFI", "SITM", "RDDT", "APP", "MELI", "AXON", "TSLA", "BE", "SNDK", 
-    "MU", "ZS", "SHOP", "PLTR", "COIN", "MSTR", "VRT", "NBIS", "ANET", 
-    "META", "PANW", "GOOG", "SNOW", "CRWD", "ADBE", "AMAT", "TTD", "ASTS", 
-    "ONON", "SE"
-)
-
-data class ActivePosition(
-    val ticker: String,
-    val contracts: Int,
-    val strike: Double,
-    val entryPrice: Double,
-    val premiumPerContract: Double
-) {
-    val totalPremium: Double = premiumPerContract * 100 * contracts
-    val collateral: Double = strike * 100 * contracts
-    val yield: Double = (totalPremium / collateral) * 100
-}
-
-val ACTIVE_TRACKER = listOf(
-    ActivePosition("AMZN", 1, 190.0, 7.35, 7.35),
-    ActivePosition("AVGO", 1, 300.0, 15.8, 15.8),
-    ActivePosition("TSM", 1, 300.0, 10.25, 10.25),
-    ActivePosition("NVDA", 1, 170.0, 8.00, 8.00),
-    ActivePosition("ALAB", 1, 105.0, 10.5, 10.5),
-    ActivePosition("CRWV", 1, 70.0, 7.25, 7.25),
-    ActivePosition("HOOD", 2, 65.0, 5.05, 5.05),
-    ActivePosition("IREN", 4, 35.0, 3.95, 3.95),
-    ActivePosition("RDDT", 1, 115.0, 9.65, 9.65),
-    ActivePosition("SITM", 1, 280.0, 26.1, 26.1)
-)
-
-@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
-fun AlphaStreamDashboard(apiService: AlphaStreamApi) {
-    val context = LocalContext.current
-    val sharedPrefs = remember { context.getSharedPreferences("AlphaStreamPrefs", Context.MODE_PRIVATE) }
-    
-    var tickerInput by remember { mutableStateOf("") }
-    
-    // Load persisted watchlist or use default
-    var watchlist by remember { 
-        val saved = sharedPrefs.getString("watchlist", null)
-        val initialList = saved?.split(",")?.filter { it.isNotBlank() } ?: PORTFOLIO_WATCHLIST_DEFAULT
-        mutableStateOf(initialList) 
-    }
-    
-    var stockResults by remember { mutableStateOf<List<StockResult>>(emptyList()) }
-    var allStockData by remember { mutableStateOf<Map<String, StockResult>>(emptyMap()) }
-    var isLoading by remember { mutableStateOf(false) }
-    var showActiveTracker by remember { mutableStateOf(false) }
-    var isEditingWatchlist by remember { mutableStateOf(false) }
-    
-    val monthlyGoal = 5000f
-    val currentRealizedProfit = ACTIVE_TRACKER.sumOf { it.totalPremium }.toFloat()
-
-    val strategies = listOf("Sell Puts", "Covered Calls")
-    var expanded by remember { mutableStateOf(false) }
-    var selectedStrategy by remember { mutableStateOf(strategies[0]) }
-
-    val scope = rememberCoroutineScope()
+fun MainScreen() {
+    var selectedTab by remember { mutableIntStateOf(0) }
     val keyboardController = LocalSoftwareKeyboardController.current
     val focusManager = LocalFocusManager.current
 
-    BackHandler(enabled = showActiveTracker) {
-        showActiveTracker = false
+    Column(modifier = Modifier.fillMaxSize().clickable {
+        keyboardController?.hide()
+        focusManager.clearFocus()
+    }) {
+        TabRow(selectedTabIndex = selectedTab) {
+            Tab(selected = selectedTab == 0, onClick = { selectedTab = 0 }, text = { Text("Market Scan") })
+            Tab(selected = selectedTab == 1, onClick = { selectedTab = 1 }, text = { Text("Portfolio Health") })
+        }
+
+        when (selectedTab) {
+            0 -> ScanScreen()
+            1 -> PortfolioScreen()
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
+@Composable
+fun ScanScreen() {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val keyboardController = LocalSoftwareKeyboardController.current
+    val sharedPrefs = remember { context.getSharedPreferences("FinanceStreamPrefs", Context.MODE_PRIVATE) }
+
+    var isLoading by remember { mutableStateOf(false) }
+    var scanResults by remember { mutableStateOf<List<ScanResultItem>>(emptyList()) }
+    var manualTicker by remember { mutableStateOf("") }
+
+    val strategies = listOf("All", "CSPs", "Diagonals", "Verticals", "Long LEAPS")
+    var selectedStrategy by remember { mutableStateOf(strategies[0]) }
+    var expandedDropdown by remember { mutableStateOf(false) }
+
+    var showTunerDialog by remember { mutableStateOf(false) }
+    var showWatchlistDialog by remember { mutableStateOf(false) }
+
+    // Persisted Watchlist State
+    var watchlist by remember {
+        val saved = sharedPrefs.getString("watchlist", null)
+        val list = saved?.split(",")?.filter { it.isNotBlank() } ?: MASTER_WATCHLIST_DEFAULT
+        mutableStateOf(list)
     }
 
-    Scaffold(
-        topBar = {
-            TopAppBar(
-                title = { 
-                    Text(if (showActiveTracker) "Active Tracker" else "JP/Anish Portfolio") 
-                },
-                navigationIcon = {
-                    if (showActiveTracker) {
-                        IconButton(onClick = { showActiveTracker = false }) {
-                            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
-                        }
+    // Tuner Settings State
+    var targetDelta by remember { mutableStateOf("-0.25") }
+    var minRoc by remember { mutableStateOf("4.0") }
+
+    if (showTunerDialog) {
+        AlertDialog(
+            onDismissRequest = { showTunerDialog = false },
+            title = { Text("Tune Strategy Engine") },
+            text = {
+                Column {
+                    OutlinedTextField(value = targetDelta, onValueChange = { targetDelta = it }, label = { Text("CSP Target Delta") })
+                    Spacer(modifier = Modifier.height(8.dp))
+                    OutlinedTextField(value = minRoc, onValueChange = { minRoc = it }, label = { Text("Min. Monthly ROC (%)") })
+                    Text("Note: Backend API tuner parameters will be passed with each scan request.", style = MaterialTheme.typography.bodySmall, color = Color.Gray, modifier = Modifier.padding(top=8.dp))
+                }
+            },
+            confirmButton = {
+                Button(onClick = { showTunerDialog = false }) { Text("Apply Locally") }
+            }
+        )
+    }
+
+    if (showWatchlistDialog) {
+        var tempWatchlistText by remember { mutableStateOf(watchlist.joinToString(", ")) }
+        AlertDialog(
+            onDismissRequest = { showWatchlistDialog = false },
+            title = { Text("Edit Market Watchlist") },
+            text = {
+                Column {
+                    Text("Enter ticker symbols separated by commas or spaces.", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+                    Spacer(modifier = Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = tempWatchlistText,
+                        onValueChange = { tempWatchlistText = it.uppercase() },
+                        modifier = Modifier.fillMaxWidth(),
+                        placeholder = { Text("AAPL, MSFT, TSLA...") }
+                    )
+                }
+            },
+            confirmButton = {
+                Button(onClick = {
+                    val newList = tempWatchlistText.split(Regex("[,\\s]+"))
+                        .filter { it.isNotBlank() }
+                        .map { it.trim() }
+                    if (newList.isNotEmpty()) {
+                        watchlist = newList
+                        sharedPrefs.edit().putString("watchlist", newList.joinToString(",")).apply()
+                        showWatchlistDialog = false
+                        Toast.makeText(context, "Watchlist updated (${newList.size} symbols)", Toast.LENGTH_SHORT).show()
+                    }
+                }) { Text("Save Watchlist") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showWatchlistDialog = false }) { Text("Cancel") }
+            }
+        )
+    }
+
+    Column(modifier = Modifier.padding(16.dp)) {
+        // Strategy Filter & Tuner
+        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+            ExposedDropdownMenuBox(
+                expanded = expandedDropdown,
+                onExpandedChange = { expandedDropdown = !expandedDropdown },
+                modifier = Modifier.weight(1f)
+            ) {
+                OutlinedTextField(
+                    value = selectedStrategy,
+                    onValueChange = {},
+                    readOnly = true,
+                    label = { Text("Strategy Filter") },
+                    trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expandedDropdown) },
+                    modifier = Modifier.menuAnchor().fillMaxWidth()
+                )
+                ExposedDropdownMenu(expanded = expandedDropdown, onDismissRequest = { expandedDropdown = false }) {
+                    strategies.forEach { selectionOption ->
+                        DropdownMenuItem(text = { Text(selectionOption) }, onClick = {
+                            selectedStrategy = selectionOption
+                            expandedDropdown = false
+                        })
                     }
                 }
+            }
+            IconButton(onClick = { showTunerDialog = true }) {
+                Icon(Icons.Default.Settings, contentDescription = "Tune Strategy")
+            }
+        }
+
+        Spacer(modifier = Modifier.height(8.dp))
+
+        // Manual Search Bar
+        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+            OutlinedTextField(
+                value = manualTicker,
+                onValueChange = { manualTicker = it.uppercase() },
+                label = { Text("Manual Ticker Check") },
+                modifier = Modifier.weight(1f),
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                keyboardActions = KeyboardActions(onSearch = { keyboardController?.hide() })
             )
         }
-    ) { paddingValues ->
-        Column(modifier = Modifier.padding(paddingValues).padding(horizontal = 16.dp)) {
-            
-            if (!showActiveTracker) {
-                Surface(
-                    shape = ButtonDefaults.shape,
-                    color = if (isLoading) MaterialTheme.colorScheme.primary.copy(alpha = 0.5f) else MaterialTheme.colorScheme.primary,
-                    contentColor = MaterialTheme.colorScheme.onPrimary,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(bottom = 4.dp)
-                        .combinedClickable(
-                            enabled = !isLoading,
-                            onClick = {
-                                scope.launch {
-                                    try {
-                                        isLoading = true
-                                        stockResults = emptyList()
-                                        val results = apiService.checkMultipleStocks(watchlist.joinToString(","))
-                                        Log.d("AlphaStream", "Watchlist Scan Results: $results")
-                                        allStockData = results.associateBy { it.ticker }
-                                        stockResults = results.filter { it.match }
-                                            .sortedByDescending { it.iv }
-                                            .take(5)
-                                        if (stockResults.isEmpty()) {
-                                            Toast.makeText(context, "No matches found.", Toast.LENGTH_SHORT).show()
-                                        }
-                                    } catch (e: Exception) {
-                                        Log.e("AlphaStream", "Portfolio Scan Error: ${e.message}")
-                                        Toast.makeText(context, "Connection Error: Backend timeout.", Toast.LENGTH_LONG).show()
-                                    } finally {
-                                        isLoading = false
+
+        Spacer(modifier = Modifier.height(16.dp))
+
+        // Scan Action Button with Long Click
+        Surface(
+            modifier = Modifier.fillMaxWidth(),
+            shape = ButtonDefaults.shape,
+            color = if (isLoading) MaterialTheme.colorScheme.primary.copy(alpha = 0.5f) else MaterialTheme.colorScheme.primary,
+            contentColor = MaterialTheme.colorScheme.onPrimary
+        ) {
+            Row(
+                modifier = Modifier
+                    .combinedClickable(
+                        enabled = !isLoading,
+                        onClick = {
+                            keyboardController?.hide()
+                            scope.launch {
+                                try {
+                                    isLoading = true
+                                    scanResults = emptyList() // Clear old results
+
+                                    val strategyParam = when (selectedStrategy) {
+                                        "CSPs" -> "csp"
+                                        "Diagonals" -> "diagonal"
+                                        "Verticals" -> "vertical"
+                                        "Long LEAPS" -> "long_leaps"
+                                        else -> null
                                     }
-                                }
-                            },
-                            onLongClick = {
-                                tickerInput = watchlist.joinToString(", ")
-                                isEditingWatchlist = true
-                                stockResults = emptyList()
-                                Toast.makeText(context, "Editing watchlist", Toast.LENGTH_SHORT).show()
-                            }
-                        )
-                ) {
-                    Row(
-                        modifier = Modifier.padding(ButtonDefaults.ContentPadding),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.Center
-                    ) {
-                        Icon(Icons.Default.PlayArrow, contentDescription = null, modifier = Modifier.size(18.dp))
-                        Spacer(Modifier.width(4.dp))
-                        Text("Scan WatchList")
-                    }
-                }
+                                    val deltaParam = targetDelta.toDoubleOrNull()
+                                    val rocParam = minRoc.toDoubleOrNull()
 
-                OutlinedButton(
-                    onClick = { 
-                        showActiveTracker = true 
-                        stockResults = emptyList()
-                    },
-                    modifier = Modifier.wrapContentSize().padding(vertical = 4.dp),
-                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)
-                ) {
-                    Icon(Icons.Filled.List, contentDescription = null, modifier = Modifier.size(16.dp))
-                    Spacer(Modifier.width(8.dp))
-                    Text("View Active Tracker", style = MaterialTheme.typography.labelMedium)
-                }
+                                    Log.d("SCAN_LOGIC", "Starting scan with strategy=$strategyParam, delta=$deltaParam, roc=$rocParam")
 
-                HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
-
-                ExposedDropdownMenuBox(
-                    expanded = expanded,
-                    onExpandedChange = { expanded = !expanded },
-                    modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp)
-                ) {
-                    OutlinedTextField(
-                        value = selectedStrategy,
-                        onValueChange = {},
-                        readOnly = true,
-                        label = { Text("Trading Strategy") },
-                        trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
-                        modifier = Modifier.menuAnchor().fillMaxWidth()
-                    )
-
-                    ExposedDropdownMenu(
-                        expanded = expanded,
-                        onDismissRequest = { expanded = false }
-                    ) {
-                        strategies.forEach { strategy ->
-                            DropdownMenuItem(
-                                text = { Text(strategy) },
-                                onClick = {
-                                    selectedStrategy = strategy
-                                    expanded = false
-                                    stockResults = emptyList()
-                                }
-                            )
-                        }
-                    }
-                }
-
-                OutlinedTextField(
-                    value = tickerInput,
-                    onValueChange = { 
-                        tickerInput = it
-                        if (it.isBlank()) isEditingWatchlist = false
-                    },
-                    label = { Text("Manual Symbol Entry") },
-                    placeholder = { 
-                        Text(
-                            text = "AAPL, MSFT...", 
-                            color = Color.Gray.copy(alpha = 0.6f)
-                        ) 
-                    },
-                    modifier = Modifier.fillMaxWidth(),
-                    singleLine = true
-                )
-
-                Button(
-                    onClick = {
-                        keyboardController?.hide()
-                        focusManager.clearFocus()
-                        if (isEditingWatchlist) {
-                            val newTickers = tickerInput.split(Regex("[,\\s]+"))
-                                .filter { it.isNotBlank() }
-                                .map { it.uppercase().trim() }
-                            if (newTickers.isNotEmpty()) {
-                                watchlist = newTickers
-                                // Persist updated watchlist
-                                sharedPrefs.edit().putString("watchlist", newTickers.joinToString(",")).apply()
-                                
-                                isEditingWatchlist = false
-                                tickerInput = ""
-                                stockResults = emptyList()
-                                Toast.makeText(context, "Watchlist updated", Toast.LENGTH_SHORT).show()
-                            }
-                        } else {
-                            val tickers = tickerInput.split(Regex("[,\\s]+"))
-                                .filter { it.isNotBlank() }
-                                .map { it.uppercase().trim() }
-                            if (tickers.isNotEmpty()) {
-                                scope.launch {
-                                    try {
-                                        isLoading = true
-                                        stockResults = emptyList()
-                                        val results = apiService.checkMultipleStocks(tickers.joinToString(","))
-                                        Log.d("AlphaStream", "Manual Scan Results: $results")
-                                        allStockData = allStockData + results.associateBy { it.ticker }
-                                        stockResults = results.sortedByDescending { it.iv }
-                                        if (stockResults.isEmpty()) {
-                                            Toast.makeText(context, "No data found.", Toast.LENGTH_SHORT).show()
-                                        }
-                                    } catch (e: Exception) {
-                                        Log.e("AlphaStream", "API Error: ${e.message}")
-                                        Toast.makeText(context, "API Error: Check backend", Toast.LENGTH_LONG).show()
-                                    } finally {
-                                        isLoading = false
-                                    }
-                                }
-                            }
-                        }
-                    },
-                    modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
-                    enabled = !isLoading && tickerInput.isNotBlank()
-                ) {
-                    if (isLoading) CircularProgressIndicator(modifier = Modifier.size(24.dp), color = Color.White)
-                    else Text(if (isEditingWatchlist) "Update WatchList" else "Run Manual Scan")
-                }
-
-                Spacer(modifier = Modifier.height(16.dp))
-                
-                LazyColumn(modifier = Modifier.fillMaxSize()) {
-                    if (stockResults.isNotEmpty()) {
-                        item {
-                            Text("Results:", style = MaterialTheme.typography.titleMedium, color = Color(0xFF2E7D32), modifier = Modifier.padding(bottom = 8.dp))
-                        }
-                        items(stockResults) { result ->
-                            StockResultCard(result)
-                        }
-                    } else if (!isLoading) {
-                        item {
-                            Box(modifier = Modifier.fillMaxWidth().padding(top = 20.dp), contentAlignment = Alignment.Center) {
-                                Text("Ready for scan", color = Color.Gray)
-                            }
-                        }
-                    }
-                }
-            } else {
-                Text("Monthly Goal Progress: $${currentRealizedProfit.toInt()} / $${monthlyGoal.toInt()}", style = MaterialTheme.typography.labelMedium)
-                LinearProgressIndicator(
-                    progress = { (currentRealizedProfit / monthlyGoal).coerceIn(0f, 1f) },
-                    modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
-                    color = Color(0xFF2E7D32),
-                    trackColor = Color(0xFFE8F5E9)
-                )
-                
-                Text("May 15 Expiration Status", style = MaterialTheme.typography.labelMedium, color = Color.Gray)
-                Spacer(modifier = Modifier.height(8.dp))
-                
-                LazyColumn(modifier = Modifier.fillMaxSize()) {
-                    items(ACTIVE_TRACKER) { position ->
-                        val currentStockInfo = allStockData[position.ticker]
-                        Card(
-                            modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
-                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
-                        ) {
-                            Column(modifier = Modifier.padding(16.dp)) {
-                                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                                    Column {
-                                        Text(position.ticker, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
-                                        Text("${position.contracts} contracts @ $${position.strike} Strike", style = MaterialTheme.typography.bodyMedium)
-                                    }
-                                    Badge(containerColor = Color(0xFFE8F5E9)) {
-                                        Text("Active", color = Color(0xFF2E7D32), modifier = Modifier.padding(4.dp))
-                                    }
-                                }
-                                Spacer(modifier = Modifier.height(8.dp))
-                                HorizontalDivider(thickness = 0.5.dp, color = Color.LightGray)
-                                Spacer(modifier = Modifier.height(8.dp))
-                                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                                    Column {
-                                        Text("Transaction Price", style = MaterialTheme.typography.labelSmall, color = Color.Gray)
-                                        Text("$${position.premiumPerContract}", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium)
-                                    }
-                                    Column(horizontalAlignment = Alignment.End) {
-                                        Text("Current Stock Price", style = MaterialTheme.typography.labelSmall, color = Color.Gray)
-                                        Text(
-                                            if (currentStockInfo != null) "$${currentStockInfo.price}" else "Run Scan to see",
-                                            style = MaterialTheme.typography.bodyMedium,
-                                            fontWeight = FontWeight.Medium,
-                                            color = if (currentStockInfo != null) MaterialTheme.colorScheme.primary else Color.Gray
+                                    if (manualTicker.isNotBlank()) {
+                                        val results = apiService.getScanResults(
+                                            tickers = manualTicker,
+                                            strategy = strategyParam,
+                                            targetDelta = deltaParam,
+                                            minRoc = rocParam
                                         )
+                                        Log.d("SCAN_LOGIC", "Manual scan for $manualTicker returned ${results.size} items")
+                                        scanResults = results
+                                    } else {
+                                        val batches = watchlist.chunked(7)
+                                        val combinedResults = mutableListOf<ScanResultItem>()
+
+                                        for (batch in batches) {
+                                            val batchString = batch.joinToString(",")
+                                            Log.d("SCAN_LOGIC", "Requesting batch: $batchString")
+                                            val batchResults = apiService.getScanResults(
+                                                tickers = batchString,
+                                                strategy = strategyParam,
+                                                targetDelta = deltaParam,
+                                                minRoc = rocParam
+                                            )
+                                            Log.d("SCAN_LOGIC", "Batch returned ${batchResults.size} items")
+                                            combinedResults.addAll(batchResults)
+                                        }
+                                        scanResults = combinedResults
                                     }
+
+                                    if (scanResults.isEmpty()) {
+                                        Toast.makeText(context, "No opportunities found. Try adjusting tuner parameters.", Toast.LENGTH_LONG).show()
+                                    }
+                                } catch (e: Exception) {
+                                    Log.e("API_ERROR", "Scan failed: ${e.message}")
+                                    Toast.makeText(context, "Scan error: ${e.message}", Toast.LENGTH_LONG).show()
+                                } finally {
+                                    isLoading = false
                                 }
                             }
+                        },
+                        onLongClick = {
+                            showWatchlistDialog = true
                         }
+                    )
+                    .padding(vertical = 12.dp),
+                horizontalArrangement = Arrangement.Center,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                if (isLoading) {
+                    CircularProgressIndicator(modifier = Modifier.size(24.dp), color = Color.White, strokeWidth = 2.dp)
+                } else {
+                    val buttonText = if (manualTicker.isNotBlank()) "Run Stock Scan" else "Run Watch List Scan"
+                    Text(buttonText, fontWeight = FontWeight.Bold)
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(16.dp))
+
+        // Results List
+        if (scanResults.isNotEmpty()) {
+            // Sort the overall list of tickers based on the selected strategy's best metric
+            val sortedResults = remember(scanResults, selectedStrategy) {
+                when (selectedStrategy) {
+                    "CSPs" -> scanResults.sortedByDescending { item ->
+                        item.csps?.maxOfOrNull { it.roc.parseToDouble() } ?: -1.0
                     }
-                    item {
-                        Button(
-                            onClick = { showActiveTracker = false },
-                            modifier = Modifier.fillMaxWidth().padding(top = 16.dp),
-                            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary)
-                        ) {
-                            Text("Close Tracker")
-                        }
+                    "Diagonals" -> scanResults.sortedByDescending { item ->
+                        item.diagonals?.maxOfOrNull { it.yieldRatio.parseToDouble() } ?: -1.0
                     }
+                    else -> scanResults
+                }
+            }
+            LazyColumn(modifier = Modifier.weight(1f)) {
+                items(sortedResults) { item ->
+                    ScanResultCard(item, selectedStrategy, scope, context)
                 }
             }
         }
@@ -432,68 +469,410 @@ fun AlphaStreamDashboard(apiService: AlphaStreamApi) {
 }
 
 @Composable
-fun StockResultCard(result: StockResult) {
-    var expanded by remember { mutableStateOf(false) }
-    
-    val estPremium60 = result.price * (result.iv / 100.0) * 0.45 
-    val monthlyReturn = if (result.price > 0) ((estPremium60 / 2) / (result.price * 0.90)) * 100 else 0.0
+fun ScanResultCard(item: ScanResultItem, strategyFilter: String, scope: kotlinx.coroutines.CoroutineScope, context: android.content.Context) {
+    // Debug logging to help identify why results might be missing
+    LaunchedEffect(item) {
+        Log.d("SCAN_UI", "Rendering ticker: ${item.ticker}")
+        Log.d("SCAN_UI", "Data - CSPs: ${item.csps?.size ?: 0}, Diags: ${item.diagonals?.size ?: 0}, Verts: ${item.verticals?.size ?: 0}, LEAPS: ${item.longLeaps?.size ?: 0}")
+    }
 
     Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(vertical = 4.dp)
-            .clickable { expanded = !expanded },
-        colors = CardDefaults.cardColors(
-            containerColor = if (result.match) Color(0xFFE8F5E9) else Color(0xFFF5F5F5)
-        )
+        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+        shape = RoundedCornerShape(8.dp),
+        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
     ) {
-        Column(modifier = Modifier.padding(16.dp)) {
-            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                Column {
-                    Text(result.ticker, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleLarge)
-                    Text("Price: $${result.price}", style = MaterialTheme.typography.bodyMedium)
-                }
-                Column(horizontalAlignment = Alignment.End) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        if (result.match && result.rsi < 40 && result.price > result.sma200) {
-                            Badge(containerColor = Color(0xFF2E7D32), modifier = Modifier.padding(end = 4.dp)) {
-                                Text("HIGH MATCH", color = Color.White, modifier = Modifier.padding(2.dp))
+        Column(modifier = Modifier.padding(12.dp)) {
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                Text(text = item.ticker, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleLarge)
+                Text(text = "$${item.price}", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+            }
+            Row {
+                if (item.rsi != null) Text("RSI: ${"%.1f".format(item.rsi)} ", style = MaterialTheme.typography.bodySmall)
+                if (item.beta != null) Text("Beta: ${"%.2f".format(item.beta)}", style = MaterialTheme.typography.bodySmall)
+            }
+
+            // CSP Results (Ordered by ROC desc, limit 10)
+            if (strategyFilter == "All" || strategyFilter == "CSPs") {
+                val sortedCsps = item.csps?.sortedByDescending {
+                    it.roc.parseToDouble()
+                }?.take(10)
+
+                sortedCsps?.forEach { csp ->
+                    OpportunityRow(
+                        title = "CSP Strike ${csp.strike}",
+                        subtitle = "Prem: $${csp.premium} | Delta: ${csp.delta} | ROC: ${csp.roc ?: "N/A"}",
+                        bt = csp.bt ?: "N/A",
+                        onAdd = {
+                            scope.launch {
+                                try {
+                                    val trade = TradeEntry(
+                                        ticker = item.ticker, strike = csp.strike, expiry = "45DTE",
+                                        trigger_price = item.price, entry_premium = csp.premium,
+                                        contracts = 1, strategy = "CSP", is_call = 0, is_buy = 0
+                                    )
+                                    apiService.addPosition(trade)
+                                    Toast.makeText(context, "Added ${item.ticker} CSP to portfolio", Toast.LENGTH_SHORT).show()
+                                } catch (e: Exception) {
+                                    Toast.makeText(context, "Failed to add position", Toast.LENGTH_SHORT).show()
+                                }
                             }
                         }
-                        Text(if (result.match) "MATCH" else "NO MATCH", 
-                            fontWeight = FontWeight.Bold, 
-                            color = if (result.match) Color(0xFF2E7D32) else Color.Gray)
-                    }
-                    Text("IV: ${result.iv}%", style = MaterialTheme.typography.bodySmall)
+                    )
                 }
             }
 
-            if (expanded) {
-                Spacer(modifier = Modifier.height(12.dp))
-                HorizontalDivider()
-                Spacer(modifier = Modifier.height(12.dp))
+            // Diagonal Results (Ordered by Yield desc, limit 10)
+            if (strategyFilter == "All" || strategyFilter == "Diagonals") {
+                val sortedDiagonals = item.diagonals?.sortedByDescending {
+                    it.yieldRatio.parseToDouble()
+                }?.take(10)
 
-                val dataPoints = listOf(
-                    "Est. Monthly Return" to "%.2f%%".format(monthlyReturn),
-                    "200-Day SMA" to "$${result.sma200}",
-                    "Delta" to "${result.delta}",
-                    "IV" to "${result.iv}%",
-                    "Lower BB" to "$${result.lower_bb}",
-                    "RSI (14)" to "${result.rsi}",
-                    "52w High" to "$${result.high52}",
-                    "15%% Target Price" to "$${result.discount_price}",
-                    "Buy Distance ($)" to "$${result.buyDistanceUsd}",
-                    "Buy Distance (%%)" to "%.2f%%".format(result.buyDistancePct)
-                )
+                sortedDiagonals?.forEach { diag ->
+                    OpportunityRow(
+                        title = "Diagonal: ${diag.longLeg ?: "?"} / ${diag.shortLeg ?: "?"}",
+                        subtitle = "Net Debit: $${diag.netDebt} | Yield: ${diag.yieldRatio ?: "N/A"}",
+                        bt = diag.bt ?: "N/A",
+                        onAdd = { /* Logic for adding diagonal */ }
+                    )
+                }
+            }
 
-                dataPoints.forEach { (label, value) ->
-                    Row(modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween) {
-                        Text(label, style = MaterialTheme.typography.bodyMedium, color = Color.DarkGray)
-                        Text(value, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium)
-                    }
+            // Vertical Results (Limit 10)
+            if (strategyFilter == "All" || strategyFilter == "Verticals") {
+                item.verticals?.take(10)?.forEach { vert ->
+                    OpportunityRow(
+                        title = "Vertical: ${vert.strikes ?: "N/A"}",
+                        subtitle = "Net Debit: $${vert.netDebit}",
+                        bt = vert.bt ?: "N/A",
+                        onAdd = { /* Logic for adding vertical */ }
+                    )
+                }
+            }
+
+            // Long LEAPS Results UI Block (Limit 10)
+            if (strategyFilter == "All" || strategyFilter == "Long LEAPS") {
+                item.longLeaps?.take(10)?.forEach { leaps ->
+                    OpportunityRow(
+                        title = "Long LEAPS: ${leaps.expiry} $${leaps.strike}C",
+                        subtitle = "Prem: $${leaps.premium} | Lev: ${leaps.leverage ?: "N/A"} | Intr: ${leaps.intrinsicBuffer ?: "N/A"}",
+                        bt = leaps.bt ?: "N/A",
+                        onAdd = {
+                            scope.launch {
+                                try {
+                                    val trade = TradeEntry(
+                                        ticker = item.ticker, strike = leaps.strike, expiry = leaps.expiry,
+                                        trigger_price = item.price, entry_premium = leaps.premium,
+                                        contracts = 1, strategy = "Long LEAPS", is_call = 1, is_buy = 1
+                                    )
+                                    apiService.addPosition(trade)
+                                    Toast.makeText(context, "Added ${item.ticker} LEAPS to portfolio", Toast.LENGTH_SHORT).show()
+                                } catch (e: Exception) {
+                                    Toast.makeText(context, "Failed to add position", Toast.LENGTH_SHORT).show()
+                                }
+                            }
+                        }
+                    )
                 }
             }
         }
     }
+}
+
+@Composable
+fun OpportunityRow(title: String, subtitle: String, bt: String, onAdd: () -> Unit) {
+    HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(title, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+            Text(subtitle, style = MaterialTheme.typography.bodySmall)
+            val isSuccess = bt.contains("Success", ignoreCase = true) || bt.contains("OK", ignoreCase = true)
+            Text("Backtest: $bt", style = MaterialTheme.typography.bodySmall, color = if (isSuccess) Color(0xFF388E3C) else Color.Red)
+        }
+        IconButton(onClick = onAdd) {
+            Icon(Icons.Default.AddCircle, contentDescription = "Add Position", tint = MaterialTheme.colorScheme.primary)
+        }
+    }
+}
+
+@Composable
+fun PortfolioScreen() {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var healthData by remember { mutableStateOf<HealthResponse?>(null) }
+    var isLoading by remember { mutableStateOf(false) }
+    var showAddManualDialog by remember { mutableStateOf(false) }
+    var closingPosition by remember { mutableStateOf<ActivePosition?>(null) }
+
+    fun refreshData() {
+        scope.launch {
+            try {
+                isLoading = true
+                healthData = apiService.getHealth()
+            } catch (e: Exception) {
+                Toast.makeText(context, "Failed to load health data", Toast.LENGTH_SHORT).show()
+            } finally {
+                isLoading = false
+            }
+        }
+    }
+
+    LaunchedEffect(Unit) {
+        refreshData()
+    }
+
+    if (showAddManualDialog) {
+        AddManualPositionDialog(
+            onDismiss = { showAddManualDialog = false },
+            onSave = { trade ->
+                scope.launch {
+                    try {
+                        apiService.addPosition(trade)
+                        Toast.makeText(context, "Position added successfully", Toast.LENGTH_SHORT).show()
+                        showAddManualDialog = false
+                        refreshData()
+                    } catch (e: Exception) {
+                        Toast.makeText(context, "Failed to add position", Toast.LENGTH_SHORT).show()
+                    }
+                }
+            }
+        )
+    }
+
+    if (closingPosition != null) {
+        ClosePositionDialog(
+            position = closingPosition!!,
+            onDismiss = { closingPosition = null },
+            onConfirm = { exitPrice, exitDate ->
+                scope.launch {
+                    try {
+                        apiService.closePosition(closingPosition!!.id!!, mapOf("exit_price" to exitPrice, "exit_date" to exitDate))
+                        Toast.makeText(context, "Position closed", Toast.LENGTH_SHORT).show()
+                        closingPosition = null
+                        refreshData()
+                    } catch (e: Exception) {
+                        Toast.makeText(context, "Failed to close position", Toast.LENGTH_SHORT).show()
+                    }
+                }
+            }
+        )
+    }
+
+    Scaffold(
+        floatingActionButton = {
+            FloatingActionButton(onClick = { showAddManualDialog = true }) {
+                Icon(Icons.Default.Add, contentDescription = "Add Manual Position")
+            }
+        }
+    ) { padding ->
+        if (isLoading && healthData == null) {
+            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                CircularProgressIndicator()
+            }
+        } else if (healthData != null) {
+            LazyColumn(modifier = Modifier.fillMaxSize().padding(padding).padding(16.dp)) {
+                item {
+                    Text("Portfolio Health", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
+                    Spacer(modifier = Modifier.height(16.dp))
+
+                    Card(modifier = Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)) {
+                        Column(modifier = Modifier.padding(16.dp)) {
+                            Text("Capital Committed", style = MaterialTheme.typography.labelLarge)
+                            Text("$${"%,.2f".format(healthData?.capitalHealth?.committed)}", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    Card(modifier = Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer)) {
+                        Column(modifier = Modifier.padding(16.dp)) {
+                            Text("Monthly Realized Profit", style = MaterialTheme.typography.labelLarge)
+                            Text("$${"%,.2f".format(healthData?.performance?.monthlyRealized)}", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+                            Text("Goal Progress: ${healthData?.performance?.progress}", style = MaterialTheme.typography.bodyMedium)
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(24.dp))
+                    Text("Active Positions", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                    HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
+                }
+
+                items(healthData?.activePositions ?: emptyList()) { pos ->
+                    PositionCard(
+                        pos = pos,
+                        onRemove = {
+                            scope.launch {
+                                try {
+                                    pos.id?.let { id ->
+                                        apiService.removePosition(id)
+                                        Toast.makeText(context, "Position removed", Toast.LENGTH_SHORT).show()
+                                        refreshData()
+                                    }
+                                } catch (e: Exception) {
+                                    Toast.makeText(context, "Failed to remove position", Toast.LENGTH_SHORT).show()
+                                }
+                            }
+                        },
+                        onClose = { closingPosition = pos }
+                    )
+                }
+
+                item {
+                    Spacer(modifier = Modifier.height(24.dp))
+                    Text("Closed Positions", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                    HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
+                }
+
+                items(healthData?.closedPositions ?: emptyList()) { pos ->
+                    ClosedPositionCard(pos)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun PositionCard(pos: ActivePosition, onRemove: () -> Unit, onClose: () -> Unit) {
+    Card(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+        Row(modifier = Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text("${pos.ticker} ${pos.strategy}", fontWeight = FontWeight.Bold)
+                Text("${pos.contracts}x ${pos.strike} Exp: ${pos.expiry}", style = MaterialTheme.typography.bodySmall)
+            }
+            Text("$${pos.entryPremium}", fontWeight = FontWeight.Bold, modifier = Modifier.padding(horizontal = 8.dp))
+            IconButton(onClick = onClose) {
+                Icon(Icons.Default.CheckCircle, contentDescription = "Close Position", tint = Color(0xFF388E3C))
+            }
+            IconButton(onClick = onRemove) {
+                Icon(Icons.Default.Delete, contentDescription = "Delete Position", tint = MaterialTheme.colorScheme.error)
+            }
+        }
+    }
+}
+
+@Composable
+fun ClosedPositionCard(pos: ClosedPosition) {
+    Card(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
+        Row(modifier = Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text("${pos.ticker} ${pos.strategy}", fontWeight = FontWeight.Bold)
+                Text("${pos.contracts}x ${pos.strike} closed on ${pos.exitDate}", style = MaterialTheme.typography.bodySmall)
+            }
+            Column(horizontalAlignment = Alignment.End) {
+                val profit = (pos.exitPrice - pos.entryPremium) * pos.contracts * 100 // Approximation for options
+                Text("Exit: $${pos.exitPrice}", fontWeight = FontWeight.Bold)
+                Text(
+                    text = "${if (profit >= 0) "+" else ""}$${"%.2f".format(profit)}",
+                    color = if (profit >= 0) Color(0xFF388E3C) else Color.Red,
+                    style = MaterialTheme.typography.bodySmall,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun ClosePositionDialog(position: ActivePosition, onDismiss: () -> Unit, onConfirm: (String, String) -> Unit) {
+    var exitPrice by remember { mutableStateOf("") }
+    var exitDate by remember { mutableStateOf(java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.getDefault()).format(java.util.Date())) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Close Position: ${position.ticker}") },
+        text = {
+            Column {
+                Text("Entry Premium: $${position.entryPremium}")
+                Spacer(modifier = Modifier.height(8.dp))
+                OutlinedTextField(
+                    value = exitPrice,
+                    onValueChange = { exitPrice = it },
+                    label = { Text("Exit Price") },
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+                OutlinedTextField(
+                    value = exitDate,
+                    onValueChange = { exitDate = it },
+                    label = { Text("Exit Date (YYYY-MM-DD)") }
+                )
+            }
+        },
+        confirmButton = {
+            Button(onClick = { onConfirm(exitPrice, exitDate) }) { Text("Confirm Close") }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Cancel") }
+        }
+    )
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun AddManualPositionDialog(onDismiss: () -> Unit, onSave: (TradeEntry) -> Unit) {
+    var ticker by remember { mutableStateOf("") }
+    var strategy by remember { mutableStateOf("CSP") }
+    var contracts by remember { mutableStateOf("1") }
+    var strike by remember { mutableStateOf("") }
+    var expiry by remember { mutableStateOf(java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.getDefault()).format(java.util.Date())) }
+    var entryPremium by remember { mutableStateOf("") }
+    var isClosed by remember { mutableStateOf(false) }
+    var exitPrice by remember { mutableStateOf("") }
+    var exitDate by remember { mutableStateOf(java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.getDefault()).format(java.util.Date())) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Add Manual Position") },
+        text = {
+            LazyColumn(modifier = Modifier.fillMaxWidth()) {
+                item {
+                    OutlinedTextField(value = ticker, onValueChange = { ticker = it.uppercase() }, label = { Text("Ticker") })
+                    Spacer(modifier = Modifier.height(8.dp))
+                    OutlinedTextField(value = strategy, onValueChange = { strategy = it }, label = { Text("Strategy (CSP, Vertical, etc.)") })
+                    Spacer(modifier = Modifier.height(8.dp))
+                    OutlinedTextField(value = strike, onValueChange = { strike = it }, label = { Text("Strike Price") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number))
+                    Spacer(modifier = Modifier.height(8.dp))
+                    OutlinedTextField(value = contracts, onValueChange = { contracts = it }, label = { Text("Contracts") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number))
+                    Spacer(modifier = Modifier.height(8.dp))
+                    OutlinedTextField(value = expiry, onValueChange = { expiry = it }, label = { Text("Expiry Date (YYYY-MM-DD)") })
+                    Spacer(modifier = Modifier.height(8.dp))
+                    OutlinedTextField(value = entryPremium, onValueChange = { entryPremium = it }, label = { Text("Entry Premium") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number))
+
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Checkbox(checked = isClosed, onCheckedChange = { isClosed = it })
+                        Text("Add as Closed Position")
+                    }
+
+                    if (isClosed) {
+                        OutlinedTextField(value = exitPrice, onValueChange = { exitPrice = it }, label = { Text("Exit Price") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number) )
+                        Spacer(modifier = Modifier.height(8.dp))
+                        OutlinedTextField(value = exitDate, onValueChange = { exitDate = it }, label = { Text("Exit Date (YYYY-MM-DD)") })
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = {
+                    val trade = TradeEntry(
+                        ticker = ticker,
+                        strike = strike.toDoubleOrNull() ?: 0.0,
+                        expiry = expiry,
+                        trigger_price = 0.0,
+                        entry_premium = entryPremium.toDoubleOrNull() ?: 0.0,
+                        contracts = contracts.toIntOrNull() ?: 1,
+                        strategy = strategy,
+                        is_call = if (strategy.contains("Call", true)) 1 else 0,
+                        is_buy = 0,
+                        exit_price = if (isClosed) exitPrice.toDoubleOrNull() else null,
+                        exit_date = if (isClosed) exitDate else null
+                    )
+                    onSave(trade)
+                }
+            ) { Text("Save") }
+        },
+        dismissButton = {
+            TextButton(onClick = { onDismiss() }) { Text("Cancel") }
+        }
+    )
 }
