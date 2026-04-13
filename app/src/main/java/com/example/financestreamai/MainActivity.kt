@@ -6,9 +6,7 @@ import android.util.Log
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
-import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -40,8 +38,6 @@ import com.google.gson.stream.JsonToken
 import com.google.gson.stream.JsonWriter
 import com.google.gson.reflect.TypeToken
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.async
-import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -462,7 +458,7 @@ fun MainScreen() {
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ScanScreen() {
     val context = LocalContext.current
@@ -1098,16 +1094,25 @@ fun AiGuruScreen() {
             modifier = Modifier
                 .fillMaxSize()
                 .padding(paddingValues)
-                .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
+                .padding(horizontal = 14.dp, vertical = 10.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             item {
-                Text("AI Guru", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        Icons.Default.TipsAndUpdates,
+                        contentDescription = null,
+                        modifier = Modifier.size(28.dp),
+                        tint = MaterialTheme.colorScheme.primary
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("AI Guru", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
+                }
                 Text(
-                    "Enter your trade idea and get a backtesting-powered recommendation.",
-                    style = MaterialTheme.typography.bodyMedium,
+                    "Enter your trade idea and get a backtesting-powered verdict.",
+                    style = MaterialTheme.typography.bodySmall,
                     color = Color.Gray,
-                    modifier = Modifier.padding(bottom = 8.dp)
+                    modifier = Modifier.padding(top = 2.dp, bottom = 6.dp)
                 )
             }
 
@@ -1232,14 +1237,17 @@ fun AiGuruScreen() {
                             }
                         }
                     },
-                    modifier = Modifier.fillMaxWidth().height(52.dp),
-                    enabled = ticker.isNotBlank() && !isLoading
+                    modifier = Modifier.fillMaxWidth().height(50.dp),
+                    enabled = ticker.isNotBlank() && !isLoading,
+                    shape = RoundedCornerShape(12.dp)
                 ) {
                     if (isLoading) {
                         CircularProgressIndicator(modifier = Modifier.size(20.dp), color = Color.White, strokeWidth = 2.dp)
                         Spacer(modifier = Modifier.width(8.dp))
                         Text("Analyzing...")
                     } else {
+                        Icon(Icons.Default.TipsAndUpdates, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
                         Text("Ask AI Guru", fontWeight = FontWeight.Bold)
                     }
                 }
@@ -1248,12 +1256,20 @@ fun AiGuruScreen() {
             // Error
             if (errorMessage != null) {
                 item {
-                    Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer)) {
-                        Text(
-                            errorMessage!!,
-                            modifier = Modifier.padding(16.dp),
-                            color = MaterialTheme.colorScheme.onErrorContainer
-                        )
+                    Card(
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer),
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Row(modifier = Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Default.Error, contentDescription = null, modifier = Modifier.size(20.dp), tint = MaterialTheme.colorScheme.onErrorContainer)
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                errorMessage!!,
+                                modifier = Modifier.weight(1f),
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onErrorContainer
+                            )
+                        }
                     }
                 }
             }
@@ -1283,24 +1299,30 @@ fun BacktestResultCard(res: BacktestResponse) {
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(containerColor = verdictColor.copy(alpha = 0.08f)),
-        shape = RoundedCornerShape(16.dp)
+        shape = RoundedCornerShape(14.dp),
+        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
     ) {
-        Column(modifier = Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            // Verdict header
-            Text(
-                res.verdict.uppercase(),
-                style = MaterialTheme.typography.headlineLarge,
-                fontWeight = FontWeight.Black,
-                color = verdictColor
-            )
-            Card(colors = CardDefaults.cardColors(containerColor = confidenceColor.copy(alpha = 0.15f))) {
+        Column(modifier = Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            // Verdict header + confidence
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 Text(
-                    "${res.confidence} Confidence",
-                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
-                    style = MaterialTheme.typography.labelMedium,
-                    fontWeight = FontWeight.Bold,
-                    color = confidenceColor
+                    res.verdict.uppercase(),
+                    style = MaterialTheme.typography.headlineMedium,
+                    fontWeight = FontWeight.Black,
+                    color = verdictColor
                 )
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = confidenceColor.copy(alpha = 0.15f)),
+                    shape = RoundedCornerShape(8.dp)
+                ) {
+                    Text(
+                        "${res.confidence} Confidence",
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 3.dp),
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.Bold,
+                        color = confidenceColor
+                    )
+                }
             }
 
             // Summary
@@ -1309,27 +1331,35 @@ fun BacktestResultCard(res: BacktestResponse) {
             HorizontalDivider()
 
             // Key metrics row
-            Row(horizontalArrangement = Arrangement.spacedBy(24.dp)) {
-                if (res.price != null) {
-                    Column {
-                        Text("Price", style = MaterialTheme.typography.labelSmall, color = Color.Gray)
-                        Text("$${res.price}", fontWeight = FontWeight.Bold)
+            Card(
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)),
+                shape = RoundedCornerShape(10.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(12.dp),
+                    horizontalArrangement = Arrangement.SpaceEvenly
+                ) {
+                    if (res.price != null) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Text("Price", style = MaterialTheme.typography.labelSmall, color = Color.Gray)
+                            Text("$${"%,.2f".format(res.price)}", fontWeight = FontWeight.Bold)
+                        }
                     }
-                }
-                if (res.rsi != null) {
-                    Column {
-                        Text("RSI", style = MaterialTheme.typography.labelSmall, color = Color.Gray)
-                        Text(
-                            "${"%.1f".format(res.rsi)}",
-                            fontWeight = FontWeight.Bold,
-                            color = if (res.rsi < 30) Color(0xFF2E7D32) else if (res.rsi > 70) Color(0xFFC62828) else Color.Unspecified
-                        )
+                    if (res.rsi != null) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Text("RSI", style = MaterialTheme.typography.labelSmall, color = Color.Gray)
+                            Text(
+                                "${"%.1f".format(res.rsi)}",
+                                fontWeight = FontWeight.Bold,
+                                color = if (res.rsi < 30) Color(0xFF2E7D32) else if (res.rsi > 70) Color(0xFFC62828) else Color.Unspecified
+                            )
+                        }
                     }
-                }
-                if (res.backtestScore != null) {
-                    Column {
-                        Text("Backtest", style = MaterialTheme.typography.labelSmall, color = Color.Gray)
-                        Text(res.backtestScore, fontWeight = FontWeight.Bold, color = Color(0xFF1565C0))
+                    if (res.backtestScore != null) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Text("Backtest", style = MaterialTheme.typography.labelSmall, color = Color.Gray)
+                            Text(res.backtestScore, fontWeight = FontWeight.Bold, color = Color(0xFF1565C0))
+                        }
                     }
                 }
             }
@@ -1340,7 +1370,10 @@ fun BacktestResultCard(res: BacktestResponse) {
                 HorizontalDivider()
                 Text("Signals", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
                 signals.forEach { signal ->
-                    Text("• $signal", style = MaterialTheme.typography.bodyMedium)
+                    Row(modifier = Modifier.padding(vertical = 1.dp)) {
+                        Text("✦ ", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.bodyMedium)
+                        Text(signal, style = MaterialTheme.typography.bodyMedium)
+                    }
                 }
             }
 
@@ -1350,7 +1383,10 @@ fun BacktestResultCard(res: BacktestResponse) {
                 HorizontalDivider()
                 Text("Warnings", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold, color = Color(0xFFEF6C00))
                 warnings.forEach { warning ->
-                    Text("⚠ $warning", style = MaterialTheme.typography.bodyMedium, color = Color(0xFFEF6C00))
+                    Row(modifier = Modifier.padding(vertical = 1.dp)) {
+                        Text("⚠ ", style = MaterialTheme.typography.bodyMedium)
+                        Text(warning, style = MaterialTheme.typography.bodyMedium, color = Color(0xFFEF6C00))
+                    }
                 }
             }
         }
@@ -1634,7 +1670,11 @@ fun PortfolioScreen() {
                     }
                     Spacer(modifier = Modifier.height(16.dp))
 
-                    Card(modifier = Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)) {
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(14.dp),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)
+                    ) {
                         Column(modifier = Modifier.padding(16.dp)) {
                             Text("Capital Committed", style = MaterialTheme.typography.labelLarge)
                             Text("$${"%,.2f".format(healthData?.capitalHealth?.committed)}", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
@@ -1643,7 +1683,11 @@ fun PortfolioScreen() {
 
                     Spacer(modifier = Modifier.height(8.dp))
 
-                    Card(modifier = Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer)) {
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(14.dp),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer)
+                    ) {
                         Column(modifier = Modifier.padding(16.dp)) {
                             Text("Monthly Realized Profit", style = MaterialTheme.typography.labelLarge)
                             Text("$${"%,.2f".format(healthData?.performance?.monthlyRealized)}", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
@@ -1716,29 +1760,58 @@ fun PortfolioScreen() {
 
 @Composable
 fun PositionCard(pos: ActivePosition, onEdit: () -> Unit, onRemove: () -> Unit, onClose: () -> Unit) {
-    Card(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
-        Column(modifier = Modifier.padding(12.dp)) {
+    Card(
+        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+        shape = RoundedCornerShape(14.dp),
+        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+    ) {
+        Column(modifier = Modifier.padding(14.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(modifier = Modifier.weight(1f)) {
-                    Text("${pos.ticker} ${pos.strategy}", fontWeight = FontWeight.Bold)
-                    Text("${pos.contracts}x $${pos.strike} | Exp: ${pos.expiry}", style = MaterialTheme.typography.bodySmall)
-                    Text("Premium: $${pos.entryPremium}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(pos.ticker, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
+                        Card(
+                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer),
+                            shape = RoundedCornerShape(6.dp)
+                        ) {
+                            Text(
+                                pos.strategy,
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.Medium
+                            )
+                        }
+                    }
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text("${pos.contracts}x $${pos.strike} | Exp: ${pos.expiry}", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+                }
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.tertiaryContainer),
+                    shape = RoundedCornerShape(8.dp)
+                ) {
+                    Text(
+                        "$${pos.entryPremium}",
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.Bold
+                    )
                 }
             }
-            Spacer(modifier = Modifier.height(4.dp))
+            Spacer(modifier = Modifier.height(6.dp))
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
             Row(horizontalArrangement = Arrangement.End, modifier = Modifier.fillMaxWidth()) {
                 TextButton(onClick = onEdit) {
-                    Icon(Icons.Default.Edit, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Icon(Icons.Default.Edit, contentDescription = null, modifier = Modifier.size(15.dp))
                     Spacer(modifier = Modifier.width(4.dp))
                     Text("Edit", style = MaterialTheme.typography.labelMedium)
                 }
                 TextButton(onClick = onClose) {
-                    Icon(Icons.Default.CheckCircle, contentDescription = null, modifier = Modifier.size(16.dp), tint = Color(0xFF388E3C))
+                    Icon(Icons.Default.CheckCircle, contentDescription = null, modifier = Modifier.size(15.dp), tint = Color(0xFF388E3C))
                     Spacer(modifier = Modifier.width(4.dp))
                     Text("Close", style = MaterialTheme.typography.labelMedium, color = Color(0xFF388E3C))
                 }
                 TextButton(onClick = onRemove) {
-                    Icon(Icons.Default.Delete, contentDescription = null, modifier = Modifier.size(16.dp), tint = MaterialTheme.colorScheme.error)
+                    Icon(Icons.Default.Delete, contentDescription = null, modifier = Modifier.size(15.dp), tint = MaterialTheme.colorScheme.error)
                     Spacer(modifier = Modifier.width(4.dp))
                     Text("Delete", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.error)
                 }
