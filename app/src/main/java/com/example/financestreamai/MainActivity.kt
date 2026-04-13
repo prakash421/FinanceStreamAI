@@ -30,7 +30,14 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import com.google.gson.Gson
+import com.google.gson.GsonBuilder
+import com.google.gson.TypeAdapter
 import com.google.gson.annotations.SerializedName
+import com.google.gson.stream.JsonReader
+import com.google.gson.stream.JsonToken
+import com.google.gson.stream.JsonWriter
+import com.google.gson.reflect.TypeToken
 import kotlinx.coroutines.launch
 import okhttp3.OkHttpClient
 import okhttp3.logging.HttpLoggingInterceptor
@@ -177,6 +184,32 @@ interface JPFinanceApi {
     suspend fun updateSettings(@Body settings: Map<String, String>): Map<String, String>
 }
 
+// Custom TypeAdapter: handles backend returning a single object OR an array for List<ScanResultItem>
+class ScanResultListAdapter : TypeAdapter<List<ScanResultItem>>() {
+    private val itemAdapter: Gson = Gson()
+    override fun write(out: JsonWriter, value: List<ScanResultItem>?) {
+        itemAdapter.toJson(value, object : TypeToken<List<ScanResultItem>>() {}.type)
+    }
+    override fun read(reader: JsonReader): List<ScanResultItem> {
+        return if (reader.peek() == JsonToken.BEGIN_ARRAY) {
+            val list = mutableListOf<ScanResultItem>()
+            reader.beginArray()
+            while (reader.hasNext()) {
+                list.add(itemAdapter.fromJson(reader, ScanResultItem::class.java))
+            }
+            reader.endArray()
+            list
+        } else {
+            listOf(itemAdapter.fromJson(reader, ScanResultItem::class.java))
+        }
+    }
+}
+
+val scanListType: java.lang.reflect.Type = object : TypeToken<List<ScanResultItem>>() {}.type
+val gson: Gson = GsonBuilder()
+    .registerTypeAdapter(scanListType, ScanResultListAdapter())
+    .create()
+
 // Render backend URL. Ensure it ends with a trailing slash.
 val retrofit: Retrofit = Retrofit.Builder()
     .baseUrl("https://financestreamai-backend.onrender.com/api/v1/")
@@ -187,7 +220,7 @@ val retrofit: Retrofit = Retrofit.Builder()
         .writeTimeout(60, TimeUnit.SECONDS)
         .build()
     )
-    .addConverterFactory(GsonConverterFactory.create())
+    .addConverterFactory(GsonConverterFactory.create(gson))
     .build()
 
 val apiService: JPFinanceApi = retrofit.create(JPFinanceApi::class.java)
