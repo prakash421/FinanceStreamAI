@@ -41,6 +41,7 @@ import com.google.gson.reflect.TypeToken
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
@@ -244,6 +245,20 @@ internal fun String?.parseToDouble(): Double {
     }
 }
 
+// Helper to format date from "2026-12-18" or "2026-12-18 $530.0C" to "12.18.2026" style
+internal fun String?.formatDate(): String {
+    if (this == null) return "N/A"
+    return try {
+        // Extract the date portion (first 10 chars matching YYYY-MM-DD)
+        val dateRegex = """(\d{4})-(\d{2})-(\d{2})""".toRegex()
+        val match = dateRegex.find(this) ?: return this
+        val (year, month, day) = match.destructured
+        val formatted = "$month.$day.$year"
+        // Replace the date in the original string, preserving any suffix like " $530.0C"
+        this.replaceRange(match.range, formatted)
+    } catch (_: Exception) { this }
+}
+
 // Helper to produce user-friendly error messages
 private fun friendlyErrorMessage(e: Exception): String {
     return when (e) {
@@ -320,6 +335,14 @@ fun MainScreen() {
     var selectedTab by remember { mutableIntStateOf(0) }
     val keyboardController = LocalSoftwareKeyboardController.current
     val focusManager = LocalFocusManager.current
+
+    // Keep-alive: ping backend every 5 minutes to prevent Render from sleeping
+    LaunchedEffect(Unit) {
+        while (true) {
+            delay(5 * 60 * 1000L)
+            try { withContext(Dispatchers.IO) { apiService.getHealth() } } catch (_: Exception) { }
+        }
+    }
 
     Column(modifier = Modifier.fillMaxSize().clickable {
         keyboardController?.hide()
@@ -686,7 +709,7 @@ fun ScanResultCard(item: ScanResultItem, strategyFilter: String, scope: kotlinx.
                 }?.take(10)
 
                 sortedCsps?.forEach { csp ->
-                    val expiryInfo = if (csp.expiry != null) " | Exp: ${csp.expiry}" else ""
+                    val expiryInfo = if (csp.expiry != null) " | Exp: ${csp.expiry.formatDate()}" else ""
                     OpportunityRow(
                         title = "CSP Strike ${csp.strike}",
                         subtitle = "Prem: $${csp.premium} | Delta: ${csp.delta} | ROC: ${csp.roc ?: "N/A"}$expiryInfo",
@@ -717,9 +740,9 @@ fun ScanResultCard(item: ScanResultItem, strategyFilter: String, scope: kotlinx.
                 }?.take(10)
 
                 sortedDiagonals?.forEach { diag ->
-                    val expiryInfo = if (diag.expiry != null) " | Exp: ${diag.expiry}" else ""
+                    val expiryInfo = if (diag.expiry != null) " | Exp: ${diag.expiry.formatDate()}" else ""
                     OpportunityRow(
-                        title = "Diagonal: BUY ${diag.longLeg ?: "?"} / SELL ${diag.shortLeg ?: "?"}",
+                        title = "Diagonal: BUY ${diag.longLeg.formatDate()} / SELL ${diag.shortLeg.formatDate()}",
                         subtitle = "Net Debit: $${diag.netDebt} | Yield: ${diag.yieldRatio ?: "N/A"}$expiryInfo",
                         bt = diag.bt ?: "N/A",
                         onAdd = { /* Logic for adding diagonal */ }
@@ -727,13 +750,28 @@ fun ScanResultCard(item: ScanResultItem, strategyFilter: String, scope: kotlinx.
                 }
             }
 
-            // Vertical Results (Limit 10)
+            // Vertical Results (Limit 10, sorted by yield desc)
             if (strategyFilter == "All" || strategyFilter == "Verticals") {
-                item.verticals?.take(10)?.forEach { vert ->
-                    val expiryInfo = if (vert.expiry != null) " | Exp: ${vert.expiry}" else ""
+                val sortedVerticals = item.verticals?.mapNotNull { vert ->
+                    // Parse strikes "L110.0/S180.0" to compute yield
+                    val yieldPct = try {
+                        val parts = vert.strikes?.replace("L", "")?.replace("S", "")?.split("/")
+                        if (parts?.size == 2) {
+                            val low = parts[0].toDouble()
+                            val high = parts[1].toDouble()
+                            val width = high - low
+                            if (vert.netDebit > 0) ((width - vert.netDebit) / vert.netDebit) * 100.0 else null
+                        } else null
+                    } catch (_: Exception) { null }
+                    Pair(vert, yieldPct)
+                }?.sortedByDescending { it.second ?: -1.0 }?.take(10)
+
+                sortedVerticals?.forEach { (vert, yieldPct) ->
+                    val yieldStr = if (yieldPct != null) "%.1f%%".format(yieldPct) else "N/A"
+                    val expiryInfo = if (vert.expiry != null) " | Exp: ${vert.expiry.formatDate()}" else ""
                     OpportunityRow(
                         title = "Vertical: ${vert.strikes ?: "N/A"}",
-                        subtitle = "Net Debit: $${vert.netDebit}$expiryInfo",
+                        subtitle = "Net Debit: $${vert.netDebit} | Yield: $yieldStr$expiryInfo",
                         bt = vert.bt ?: "N/A",
                         onAdd = { /* Logic for adding vertical */ }
                     )
@@ -744,8 +782,8 @@ fun ScanResultCard(item: ScanResultItem, strategyFilter: String, scope: kotlinx.
             if (strategyFilter == "All" || strategyFilter == "Long LEAPS") {
                 item.longLeaps?.take(10)?.forEach { leaps ->
                     OpportunityRow(
-                        title = "Long LEAPS: ${leaps.expiry} $${leaps.strike}C",
-                        subtitle = "Prem: $${leaps.premium} | Lev: ${leaps.leverage ?: "N/A"} | Intr: ${leaps.intrinsicBuffer ?: "N/A"}",
+                        title = "Long LEAPS: ${leaps.expiry.formatDate()} $${leaps.strike}C",
+                        subtitle = "Prem: $${leaps.premium} | Lev: ${leaps.leverage ?: "N/A"} | Buffer: ${leaps.intrinsicBuffer ?: "N/A"}",
                         bt = leaps.bt ?: "N/A",
                         onAdd = {
                             scope.launch {
