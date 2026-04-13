@@ -220,9 +220,9 @@ val retrofit: Retrofit = Retrofit.Builder()
     .baseUrl("https://financestreamai-backend.onrender.com/api/v1/")
     .client(OkHttpClient.Builder()
         .addInterceptor(HttpLoggingInterceptor().apply { level = HttpLoggingInterceptor.Level.BASIC })
-        .connectTimeout(30, TimeUnit.SECONDS)
-        .readTimeout(60, TimeUnit.SECONDS)
-        .writeTimeout(30, TimeUnit.SECONDS)
+        .connectTimeout(15, TimeUnit.SECONDS)
+        .readTimeout(45, TimeUnit.SECONDS)
+        .writeTimeout(15, TimeUnit.SECONDS)
         .build()
     )
     .addConverterFactory(GsonConverterFactory.create(gson))
@@ -273,6 +273,44 @@ private fun friendlyErrorMessage(e: Exception): String {
         }
         is java.io.IOException -> "Connection lost. Please check your network and try again."
         else -> e.message ?: "An unexpected error occurred. Please try again."
+    }
+}
+
+// ==========================================
+// LOCAL PORTFOLIO CACHE (survives app restart)
+// ==========================================
+object PortfolioCache {
+    private const val PREFS_NAME = "PortfolioCache"
+    private const val KEY_ACTIVE = "active_positions"
+    private const val KEY_CLOSED = "closed_positions"
+
+    private fun prefs(context: Context) = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+
+    fun savePositions(context: Context, active: List<ActivePosition>, closed: List<ClosedPosition>) {
+        prefs(context).edit()
+            .putString(KEY_ACTIVE, gson.toJson(active))
+            .putString(KEY_CLOSED, gson.toJson(closed))
+            .apply()
+    }
+
+    fun addPosition(context: Context, pos: ActivePosition) {
+        val current = loadActivePositions(context).toMutableList()
+        current.add(pos)
+        prefs(context).edit().putString(KEY_ACTIVE, gson.toJson(current)).apply()
+    }
+
+    fun loadActivePositions(context: Context): List<ActivePosition> {
+        val json = prefs(context).getString(KEY_ACTIVE, null) ?: return emptyList()
+        return try {
+            gson.fromJson(json, object : TypeToken<List<ActivePosition>>() {}.type)
+        } catch (_: Exception) { emptyList() }
+    }
+
+    fun loadClosedPositions(context: Context): List<ClosedPosition> {
+        val json = prefs(context).getString(KEY_CLOSED, null) ?: return emptyList()
+        return try {
+            gson.fromJson(json, object : TypeToken<List<ClosedPosition>>() {}.type)
+        } catch (_: Exception) { emptyList() }
     }
 }
 
@@ -537,31 +575,27 @@ fun ScanScreen() {
                                         scanResults = results
                                     } else {
                                         val batches = watchlist.chunked(5)
-                                        scanProgress = "Scanning ${batches.size} batches in parallel..."
-                                        Log.d("SCAN_LOGIC", "Firing ${batches.size} parallel batches (size 5)")
+                                        val combinedResults = mutableListOf<ScanResultItem>()
+                                        var failedBatches = 0
 
-                                        val deferredResults = batches.mapIndexed { index, batch ->
-                                            scope.async(Dispatchers.IO) {
-                                                val batchString = batch.joinToString(",")
-                                                try {
-                                                    val batchResults = apiService.getScanResults(
-                                                        tickers = batchString,
-                                                        strategy = strategyParam,
-                                                        targetDelta = deltaParam,
-                                                        minRoc = rocParam
-                                                    )
-                                                    Log.d("SCAN_LOGIC", "Batch ${index + 1} returned ${batchResults.size} items")
-                                                    batchResults
-                                                } catch (e: Exception) {
-                                                    Log.e("SCAN_LOGIC", "Batch ${index + 1} failed: ${e.message}")
-                                                    null
-                                                }
+                                        for ((index, batch) in batches.withIndex()) {
+                                            val batchString = batch.joinToString(",")
+                                            scanProgress = "Scanning batch ${index + 1} of ${batches.size} (${batch.size} symbols)..."
+                                            Log.d("SCAN_LOGIC", "Requesting batch ${index + 1}/${batches.size}: $batchString")
+                                            try {
+                                                val batchResults = apiService.getScanResults(
+                                                    tickers = batchString,
+                                                    strategy = strategyParam,
+                                                    targetDelta = deltaParam,
+                                                    minRoc = rocParam
+                                                )
+                                                Log.d("SCAN_LOGIC", "Batch ${index + 1} returned ${batchResults.size} items")
+                                                combinedResults.addAll(batchResults)
+                                            } catch (e: Exception) {
+                                                failedBatches++
+                                                Log.e("SCAN_LOGIC", "Batch ${index + 1} failed: ${e.message}")
                                             }
                                         }
-
-                                        val allResults = deferredResults.awaitAll()
-                                        val combinedResults = allResults.filterNotNull().flatten().toMutableList()
-                                        val failedBatches = allResults.count { it == null }
                                         scanResults = combinedResults
 
                                         if (failedBatches > 0 && combinedResults.isNotEmpty()) {
@@ -723,6 +757,7 @@ fun ScanResultCard(item: ScanResultItem, strategyFilter: String, scope: kotlinx.
                                         contracts = 1, strategy = "CSP", is_call = 0, is_buy = 0
                                     )
                                     apiService.addPosition(trade)
+                                    PortfolioCache.addPosition(context, ActivePosition(ticker = item.ticker, strategy = "CSP", contracts = 1, strike = csp.strike, expiry = csp.expiry ?: "45DTE", entryPremium = csp.premium))
                                     Toast.makeText(context, "Added ${item.ticker} CSP to portfolio", Toast.LENGTH_SHORT).show()
                                 } catch (e: Exception) {
                                     Toast.makeText(context, "Failed to add: ${friendlyErrorMessage(e)}", Toast.LENGTH_LONG).show()
@@ -745,7 +780,27 @@ fun ScanResultCard(item: ScanResultItem, strategyFilter: String, scope: kotlinx.
                         title = "Diagonal: BUY ${diag.longLeg.formatDate()} / SELL ${diag.shortLeg.formatDate()}",
                         subtitle = "Net Debit: $${diag.netDebt} | Yield: ${diag.yieldRatio ?: "N/A"}$expiryInfo",
                         bt = diag.bt ?: "N/A",
-                        onAdd = { /* Logic for adding diagonal */ }
+                        onAdd = {
+                            scope.launch {
+                                try {
+                                    val trade = TradeEntry(
+                                        ticker = item.ticker,
+                                        strike = diag.netDebt,
+                                        expiry = diag.expiry ?: "N/A",
+                                        trigger_price = item.price,
+                                        entry_premium = diag.netDebt,
+                                        contracts = 1,
+                                        strategy = "Diagonal BUY ${diag.longLeg ?: "?"} / SELL ${diag.shortLeg ?: "?"}",
+                                        is_call = 1, is_buy = 1
+                                    )
+                                    apiService.addPosition(trade)
+                                    PortfolioCache.addPosition(context, ActivePosition(ticker = item.ticker, strategy = trade.strategy, contracts = 1, strike = diag.netDebt, expiry = diag.expiry ?: "N/A", entryPremium = diag.netDebt))
+                                    Toast.makeText(context, "Added ${item.ticker} Diagonal to portfolio", Toast.LENGTH_SHORT).show()
+                                } catch (e: Exception) {
+                                    Toast.makeText(context, "Failed to add: ${friendlyErrorMessage(e)}", Toast.LENGTH_LONG).show()
+                                }
+                            }
+                        }
                     )
                 }
             }
@@ -773,7 +828,31 @@ fun ScanResultCard(item: ScanResultItem, strategyFilter: String, scope: kotlinx.
                         title = "Vertical: ${vert.strikes ?: "N/A"}",
                         subtitle = "Net Debit: $${vert.netDebit} | Yield: $yieldStr$expiryInfo",
                         bt = vert.bt ?: "N/A",
-                        onAdd = { /* Logic for adding vertical */ }
+                        onAdd = {
+                            scope.launch {
+                                try {
+                                    // Parse buy strike from "L110.0/S180.0"
+                                    val buyStrike = try {
+                                        vert.strikes?.replace("L", "")?.split("/")?.get(0)?.toDouble() ?: 0.0
+                                    } catch (_: Exception) { 0.0 }
+                                    val trade = TradeEntry(
+                                        ticker = item.ticker,
+                                        strike = buyStrike,
+                                        expiry = vert.expiry ?: "N/A",
+                                        trigger_price = item.price,
+                                        entry_premium = vert.netDebit,
+                                        contracts = 1,
+                                        strategy = "Vertical ${vert.strikes ?: ""}",
+                                        is_call = 1, is_buy = 1
+                                    )
+                                    apiService.addPosition(trade)
+                                    PortfolioCache.addPosition(context, ActivePosition(ticker = item.ticker, strategy = trade.strategy, contracts = 1, strike = buyStrike, expiry = vert.expiry ?: "N/A", entryPremium = vert.netDebit))
+                                    Toast.makeText(context, "Added ${item.ticker} Vertical to portfolio", Toast.LENGTH_SHORT).show()
+                                } catch (e: Exception) {
+                                    Toast.makeText(context, "Failed to add: ${friendlyErrorMessage(e)}", Toast.LENGTH_LONG).show()
+                                }
+                            }
+                        }
                     )
                 }
             }
@@ -794,6 +873,7 @@ fun ScanResultCard(item: ScanResultItem, strategyFilter: String, scope: kotlinx.
                                         contracts = 1, strategy = "Long LEAPS", is_call = 1, is_buy = 1
                                     )
                                     apiService.addPosition(trade)
+                                    PortfolioCache.addPosition(context, ActivePosition(ticker = item.ticker, strategy = "Long LEAPS", contracts = 1, strike = leaps.strike, expiry = leaps.expiry, entryPremium = leaps.premium))
                                     Toast.makeText(context, "Added ${item.ticker} LEAPS to portfolio", Toast.LENGTH_SHORT).show()
                                 } catch (e: Exception) {
                                     Toast.makeText(context, "Failed to add: ${friendlyErrorMessage(e)}", Toast.LENGTH_LONG).show()
@@ -841,10 +921,32 @@ fun PortfolioScreen() {
             try {
                 isLoading = true
                 errorMessage = null
-                healthData = apiService.getHealth()
+                val response = apiService.getHealth()
+                healthData = response
+                // Cache backend data locally
+                PortfolioCache.savePositions(
+                    context,
+                    response.activePositions,
+                    response.closedPositions ?: emptyList()
+                )
             } catch (e: Exception) {
                 Log.e("PORTFOLIO", "Health load failed: ${e.message}")
                 errorMessage = friendlyErrorMessage(e)
+                // If backend fails and we have no data yet, load from local cache
+                if (healthData == null) {
+                    val cachedActive = PortfolioCache.loadActivePositions(context)
+                    val cachedClosed = PortfolioCache.loadClosedPositions(context)
+                    if (cachedActive.isNotEmpty() || cachedClosed.isNotEmpty()) {
+                        healthData = HealthResponse(
+                            status = "cached",
+                            capitalHealth = CapitalHealth(0.0),
+                            performance = PerformanceMetrics(0.0, "N/A"),
+                            activePositions = cachedActive,
+                            closedPositions = cachedClosed
+                        )
+                        errorMessage = null
+                    }
+                }
             } finally {
                 isLoading = false
             }
@@ -852,6 +954,19 @@ fun PortfolioScreen() {
     }
 
     LaunchedEffect(Unit) {
+        // Load cached data first for instant display
+        val cachedActive = PortfolioCache.loadActivePositions(context)
+        val cachedClosed = PortfolioCache.loadClosedPositions(context)
+        if (cachedActive.isNotEmpty() || cachedClosed.isNotEmpty()) {
+            healthData = HealthResponse(
+                status = "cached",
+                capitalHealth = CapitalHealth(0.0),
+                performance = PerformanceMetrics(0.0, "N/A"),
+                activePositions = cachedActive,
+                closedPositions = cachedClosed
+            )
+        }
+        // Then refresh from backend (will overwrite with live data)
         refreshData()
     }
 
@@ -882,10 +997,16 @@ fun PortfolioScreen() {
             onConfirm = { exitPrice, exitDate ->
                 scope.launch {
                     try {
-                        apiService.closePosition(closingPosition!!.id!!, mapOf("exit_price" to exitPrice, "exit_date" to exitDate))
-                        closingPosition = null
-                        refreshData()
-                        snackbarHostState.showSnackbar("Position closed")
+                        val posId = closingPosition?.id
+                        if (posId != null) {
+                            apiService.closePosition(posId, mapOf("exit_price" to exitPrice, "exit_date" to exitDate))
+                            closingPosition = null
+                            refreshData()
+                            snackbarHostState.showSnackbar("Position closed")
+                        } else {
+                            closingPosition = null
+                            snackbarHostState.showSnackbar("Close not supported — backend doesn't provide position IDs")
+                        }
                     } catch (e: Exception) {
                         snackbarHostState.showSnackbar("Failed to close: ${friendlyErrorMessage(e)}")
                     }
@@ -901,7 +1022,12 @@ fun PortfolioScreen() {
             onSave = { trade ->
                 scope.launch {
                     try {
-                        apiService.updatePosition(editingPosition!!.id!!, trade)
+                        val posId = editingPosition?.id
+                        if (posId != null) {
+                            apiService.updatePosition(posId, trade)
+                        } else {
+                            apiService.addPosition(trade)
+                        }
                         editingPosition = null
                         refreshData()
                         snackbarHostState.showSnackbar("Position updated")
@@ -928,10 +1054,13 @@ fun PortfolioScreen() {
                         deletingPosition = null
                         scope.launch {
                             try {
-                                pos.id?.let { id ->
-                                    apiService.removePosition(id)
+                                val posId = pos.id
+                                if (posId != null) {
+                                    apiService.removePosition(posId)
                                     refreshData()
                                     snackbarHostState.showSnackbar("${pos.ticker} position removed")
+                                } else {
+                                    snackbarHostState.showSnackbar("Delete not supported — backend doesn't provide position IDs")
                                 }
                             } catch (e: Exception) {
                                 snackbarHostState.showSnackbar("Failed to delete: ${friendlyErrorMessage(e)}")
@@ -1237,15 +1366,21 @@ fun EditPositionDialog(position: ActivePosition, onDismiss: () -> Unit, onSave: 
 fun AddManualPositionDialog(onDismiss: () -> Unit, onSave: (TradeEntry) -> Unit) {
     var ticker by remember { mutableStateOf("") }
     var strategy by remember { mutableStateOf("CSP") }
+    var expandedStrategy by remember { mutableStateOf(false) }
+    val strategyOptions = listOf("CSP", "Vertical", "Diagonal", "Long LEAPS")
     var contracts by remember { mutableStateOf("1") }
     var strike by remember { mutableStateOf("") }
+    var strikeSell by remember { mutableStateOf("") }
     var expiry by remember { mutableStateOf(java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.getDefault()).format(java.util.Date())) }
+    var expiryShort by remember { mutableStateOf("") }
     var entryPremium by remember { mutableStateOf("") }
     var isClosed by remember { mutableStateOf(false) }
     var exitPrice by remember { mutableStateOf("") }
     var exitDate by remember { mutableStateOf(java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.getDefault()).format(java.util.Date())) }
 
+    val isSpread = strategy == "Vertical" || strategy == "Diagonal"
     val isValid = ticker.isNotBlank() && strike.toDoubleOrNull() != null && entryPremium.toDoubleOrNull() != null &&
+            (!isSpread || strikeSell.toDoubleOrNull() != null) &&
             (!isClosed || exitPrice.toDoubleOrNull() != null)
 
     AlertDialog(
@@ -1256,15 +1391,63 @@ fun AddManualPositionDialog(onDismiss: () -> Unit, onSave: (TradeEntry) -> Unit)
                 item {
                     OutlinedTextField(value = ticker, onValueChange = { ticker = it.uppercase() }, label = { Text("Ticker *") }, modifier = Modifier.fillMaxWidth())
                     Spacer(modifier = Modifier.height(8.dp))
-                    OutlinedTextField(value = strategy, onValueChange = { strategy = it }, label = { Text("Strategy (CSP, Vertical, etc.)") }, modifier = Modifier.fillMaxWidth())
+
+                    // Strategy dropdown
+                    ExposedDropdownMenuBox(
+                        expanded = expandedStrategy,
+                        onExpandedChange = { expandedStrategy = !expandedStrategy }
+                    ) {
+                        OutlinedTextField(
+                            value = strategy,
+                            onValueChange = {},
+                            readOnly = true,
+                            label = { Text("Strategy") },
+                            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expandedStrategy) },
+                            modifier = Modifier.menuAnchor().fillMaxWidth()
+                        )
+                        ExposedDropdownMenu(expanded = expandedStrategy, onDismissRequest = { expandedStrategy = false }) {
+                            strategyOptions.forEach { option ->
+                                DropdownMenuItem(text = { Text(option) }, onClick = {
+                                    strategy = option
+                                    expandedStrategy = false
+                                })
+                            }
+                        }
+                    }
                     Spacer(modifier = Modifier.height(8.dp))
-                    OutlinedTextField(value = strike, onValueChange = { strike = it }, label = { Text("Strike Price *") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal), modifier = Modifier.fillMaxWidth())
+
+                    // Buy leg strike
+                    OutlinedTextField(
+                        value = strike, onValueChange = { strike = it },
+                        label = { Text(if (isSpread) "Buy Leg Strike *" else "Strike Price *") },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                        modifier = Modifier.fillMaxWidth()
+                    )
                     Spacer(modifier = Modifier.height(8.dp))
+
+                    // Sell leg strike (only for spreads)
+                    if (isSpread) {
+                        OutlinedTextField(
+                            value = strikeSell, onValueChange = { strikeSell = it },
+                            label = { Text("Sell Leg Strike *") },
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+                    }
+
                     OutlinedTextField(value = contracts, onValueChange = { contracts = it }, label = { Text("Contracts") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), modifier = Modifier.fillMaxWidth())
                     Spacer(modifier = Modifier.height(8.dp))
-                    OutlinedTextField(value = expiry, onValueChange = { expiry = it }, label = { Text("Expiry Date (YYYY-MM-DD)") }, modifier = Modifier.fillMaxWidth())
+                    OutlinedTextField(value = expiry, onValueChange = { expiry = it }, label = { Text(if (isSpread && strategy == "Diagonal") "Buy Leg Expiry (YYYY-MM-DD)" else "Expiry Date (YYYY-MM-DD)") }, modifier = Modifier.fillMaxWidth())
                     Spacer(modifier = Modifier.height(8.dp))
-                    OutlinedTextField(value = entryPremium, onValueChange = { entryPremium = it }, label = { Text("Entry Premium *") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal), modifier = Modifier.fillMaxWidth())
+
+                    // Short leg expiry for Diagonal
+                    if (strategy == "Diagonal") {
+                        OutlinedTextField(value = expiryShort, onValueChange = { expiryShort = it }, label = { Text("Sell Leg Expiry (YYYY-MM-DD)") }, modifier = Modifier.fillMaxWidth())
+                        Spacer(modifier = Modifier.height(8.dp))
+                    }
+
+                    OutlinedTextField(value = entryPremium, onValueChange = { entryPremium = it }, label = { Text(if (isSpread) "Net Debit *" else "Entry Premium *") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal), modifier = Modifier.fillMaxWidth())
 
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Checkbox(checked = isClosed, onCheckedChange = { isClosed = it })
@@ -1282,6 +1465,16 @@ fun AddManualPositionDialog(onDismiss: () -> Unit, onSave: (TradeEntry) -> Unit)
         confirmButton = {
             Button(
                 onClick = {
+                    val strategyStr = if (isSpread) {
+                        val sellStrikeVal = strikeSell.toDoubleOrNull() ?: 0.0
+                        val buyStrikeVal = strike.toDoubleOrNull() ?: 0.0
+                        if (strategy == "Diagonal") {
+                            "Diagonal BUY $expiry $$buyStrikeVal / SELL ${expiryShort.ifBlank { "N/A" }} $$sellStrikeVal"
+                        } else {
+                            "Vertical L$buyStrikeVal/S$sellStrikeVal"
+                        }
+                    } else strategy
+
                     val trade = TradeEntry(
                         ticker = ticker,
                         strike = strike.toDoubleOrNull() ?: 0.0,
@@ -1289,9 +1482,9 @@ fun AddManualPositionDialog(onDismiss: () -> Unit, onSave: (TradeEntry) -> Unit)
                         trigger_price = 0.0,
                         entry_premium = entryPremium.toDoubleOrNull() ?: 0.0,
                         contracts = contracts.toIntOrNull() ?: 1,
-                        strategy = strategy,
-                        is_call = if (strategy.contains("Call", true) || strategy.contains("LEAPS", true)) 1 else 0,
-                        is_buy = 0,
+                        strategy = strategyStr,
+                        is_call = if (strategy.contains("Call", true) || strategy.contains("LEAPS", true) || strategy == "Vertical" || strategy == "Diagonal") 1 else 0,
+                        is_buy = if (strategy == "CSP") 0 else 1,
                         exit_price = if (isClosed) exitPrice.toDoubleOrNull() else null,
                         exit_date = if (isClosed) exitDate else null
                     )
