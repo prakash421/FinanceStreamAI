@@ -38,7 +38,11 @@ import com.google.gson.stream.JsonReader
 import com.google.gson.stream.JsonToken
 import com.google.gson.stream.JsonWriter
 import com.google.gson.reflect.TypeToken
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.logging.HttpLoggingInterceptor
 import retrofit2.HttpException
@@ -215,9 +219,9 @@ val retrofit: Retrofit = Retrofit.Builder()
     .baseUrl("https://financestreamai-backend.onrender.com/api/v1/")
     .client(OkHttpClient.Builder()
         .addInterceptor(HttpLoggingInterceptor().apply { level = HttpLoggingInterceptor.Level.BASIC })
-        .connectTimeout(120, TimeUnit.SECONDS)
-        .readTimeout(300, TimeUnit.SECONDS)
-        .writeTimeout(60, TimeUnit.SECONDS)
+        .connectTimeout(30, TimeUnit.SECONDS)
+        .readTimeout(60, TimeUnit.SECONDS)
+        .writeTimeout(30, TimeUnit.SECONDS)
         .build()
     )
     .addConverterFactory(GsonConverterFactory.create(gson))
@@ -264,6 +268,10 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         scheduleDailyRecommendations()
+        // Pre-warm: wake up Render backend so it's ready when user scans
+        kotlinx.coroutines.CoroutineScope(Dispatchers.IO).launch {
+            try { apiService.getHealth() } catch (_: Exception) { }
+        }
         setContent {
             MaterialTheme {
                 Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
@@ -505,28 +513,32 @@ fun ScanScreen() {
                                         Log.d("SCAN_LOGIC", "Manual scan for $manualTicker returned ${results.size} items")
                                         scanResults = results
                                     } else {
-                                        val batches = watchlist.chunked(3)
-                                        val combinedResults = mutableListOf<ScanResultItem>()
-                                        var failedBatches = 0
+                                        val batches = watchlist.chunked(5)
+                                        scanProgress = "Scanning ${batches.size} batches in parallel..."
+                                        Log.d("SCAN_LOGIC", "Firing ${batches.size} parallel batches (size 5)")
 
-                                        for ((index, batch) in batches.withIndex()) {
-                                            val batchString = batch.joinToString(",")
-                                            scanProgress = "Scanning batch ${index + 1} of ${batches.size} (${batch.joinToString(", ")})..."
-                                            Log.d("SCAN_LOGIC", "Requesting batch ${index + 1}/${batches.size}: $batchString")
-                                            try {
-                                                val batchResults = apiService.getScanResults(
-                                                    tickers = batchString,
-                                                    strategy = strategyParam,
-                                                    targetDelta = deltaParam,
-                                                    minRoc = rocParam
-                                                )
-                                                Log.d("SCAN_LOGIC", "Batch ${index + 1} returned ${batchResults.size} items")
-                                                combinedResults.addAll(batchResults)
-                                            } catch (e: Exception) {
-                                                failedBatches++
-                                                Log.e("SCAN_LOGIC", "Batch ${index + 1} failed: ${e.message}")
+                                        val deferredResults = batches.mapIndexed { index, batch ->
+                                            scope.async(Dispatchers.IO) {
+                                                val batchString = batch.joinToString(",")
+                                                try {
+                                                    val batchResults = apiService.getScanResults(
+                                                        tickers = batchString,
+                                                        strategy = strategyParam,
+                                                        targetDelta = deltaParam,
+                                                        minRoc = rocParam
+                                                    )
+                                                    Log.d("SCAN_LOGIC", "Batch ${index + 1} returned ${batchResults.size} items")
+                                                    batchResults
+                                                } catch (e: Exception) {
+                                                    Log.e("SCAN_LOGIC", "Batch ${index + 1} failed: ${e.message}")
+                                                    null
+                                                }
                                             }
                                         }
+
+                                        val allResults = deferredResults.awaitAll()
+                                        val combinedResults = allResults.filterNotNull().flatten().toMutableList()
+                                        val failedBatches = allResults.count { it == null }
                                         scanResults = combinedResults
 
                                         if (failedBatches > 0 && combinedResults.isNotEmpty()) {
@@ -707,7 +719,7 @@ fun ScanResultCard(item: ScanResultItem, strategyFilter: String, scope: kotlinx.
                 sortedDiagonals?.forEach { diag ->
                     val expiryInfo = if (diag.expiry != null) " | Exp: ${diag.expiry}" else ""
                     OpportunityRow(
-                        title = "Diagonal: ${diag.longLeg ?: "?"} / ${diag.shortLeg ?: "?"}",
+                        title = "Diagonal: BUY ${diag.longLeg ?: "?"} / SELL ${diag.shortLeg ?: "?"}",
                         subtitle = "Net Debit: $${diag.netDebt} | Yield: ${diag.yieldRatio ?: "N/A"}$expiryInfo",
                         bt = diag.bt ?: "N/A",
                         onAdd = { /* Logic for adding diagonal */ }
