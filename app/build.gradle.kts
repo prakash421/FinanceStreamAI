@@ -5,16 +5,12 @@ plugins {
 
 android {
     namespace = "com.example.financestreamai"
-    compileSdk {
-        version = release(36) {
-            minorApiLevel = 1
-        }
-    }
+    compileSdk = 35
 
     defaultConfig {
         applicationId = "com.example.financestreamai"
         minSdk = 24
-        targetSdk = 36
+        targetSdk = 35
         versionCode = 1
         versionName = "1.0"
 
@@ -57,14 +53,9 @@ dependencies {
     debugImplementation(libs.androidx.compose.ui.tooling)
     debugImplementation(libs.androidx.compose.ui.test.manifest)
 
-    // Libraries to talk to your Python Backend
     implementation("com.squareup.retrofit2:retrofit:2.9.0")
     implementation("com.squareup.retrofit2:converter-gson:2.9.0")
     implementation("com.squareup.okhttp3:logging-interceptor:4.11.0")
-    
-    // Background Task Management for Automation
     implementation("androidx.work:work-runtime-ktx:2.9.0")
-
-    // Library to handle images (for stock logos later)
     implementation("io.coil-kt:coil-compose:2.4.0")
 }

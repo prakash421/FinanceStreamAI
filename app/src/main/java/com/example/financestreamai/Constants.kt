@@ -5,5 +5,5 @@ val PORTFOLIO_WATCHLIST_DEFAULT = listOf(
     "SOFI", "SITM", "RDDT", "APP", "MELI", "AXON", "TSLA", "BE", "SNDK", 
     "MU", "ZS", "SHOP", "PLTR", "COIN", "MSTR", "VRT", "NBIS", "ANET", 
     "META", "PANW", "GOOG", "SNOW", "CRWD", "ADBE", "AMAT", "TTD", "ASTS", 
-    "ONON", "SE"
+    "ONON", "SE", "WDC", "STX"
 )
