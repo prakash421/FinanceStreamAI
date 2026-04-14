@@ -7,6 +7,7 @@ import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -425,35 +426,43 @@ fun MainScreen() {
         }
     }
 
-    Column(modifier = Modifier.fillMaxSize().clickable {
-        keyboardController?.hide()
-        focusManager.clearFocus()
-    }) {
-        NavigationBar(tonalElevation = 4.dp) {
-            NavigationBarItem(
-                selected = selectedTab == 0,
-                onClick = { selectedTab = 0 },
-                icon = { Icon(Icons.Default.Search, contentDescription = null) },
-                label = { Text("Scan") }
-            )
-            NavigationBarItem(
-                selected = selectedTab == 1,
-                onClick = { selectedTab = 1 },
-                icon = { Icon(Icons.Default.AccountBalance, contentDescription = null) },
-                label = { Text("Portfolio") }
-            )
-            NavigationBarItem(
-                selected = selectedTab == 2,
-                onClick = { selectedTab = 2 },
-                icon = { Icon(Icons.Default.TipsAndUpdates, contentDescription = null) },
-                label = { Text("AI Guru") }
-            )
+    Scaffold(
+        modifier = Modifier.clickable(
+            indication = null,
+            interactionSource = remember { MutableInteractionSource() }
+        ) {
+            keyboardController?.hide()
+            focusManager.clearFocus()
+        },
+        bottomBar = {
+            NavigationBar(tonalElevation = 4.dp) {
+                NavigationBarItem(
+                    selected = selectedTab == 0,
+                    onClick = { selectedTab = 0 },
+                    icon = { Icon(Icons.Default.Search, contentDescription = null) },
+                    label = { Text("Scan") }
+                )
+                NavigationBarItem(
+                    selected = selectedTab == 1,
+                    onClick = { selectedTab = 1 },
+                    icon = { Icon(Icons.Default.AccountBalance, contentDescription = null) },
+                    label = { Text("Portfolio") }
+                )
+                NavigationBarItem(
+                    selected = selectedTab == 2,
+                    onClick = { selectedTab = 2 },
+                    icon = { Icon(Icons.Default.TipsAndUpdates, contentDescription = null) },
+                    label = { Text("AI Guru") }
+                )
+            }
         }
-
-        when (selectedTab) {
-            0 -> ScanScreen()
-            1 -> PortfolioScreen()
-            2 -> AiGuruScreen()
+    ) { innerPadding ->
+        Box(modifier = Modifier.padding(innerPadding)) {
+            when (selectedTab) {
+                0 -> ScanScreen()
+                1 -> PortfolioScreen()
+                2 -> AiGuruScreen()
+            }
         }
     }
 }
@@ -1304,13 +1313,14 @@ fun BacktestResultCard(res: BacktestResponse) {
     ) {
         Column(modifier = Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             // Verdict header + confidence
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            Column {
                 Text(
                     res.verdict.uppercase(),
                     style = MaterialTheme.typography.headlineMedium,
                     fontWeight = FontWeight.Black,
                     color = verdictColor
                 )
+                Spacer(modifier = Modifier.height(4.dp))
                 Card(
                     colors = CardDefaults.cardColors(containerColor = confidenceColor.copy(alpha = 0.15f)),
                     shape = RoundedCornerShape(8.dp)
