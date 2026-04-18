@@ -875,7 +875,7 @@ fun ScanResultCard(item: ScanResultItem, strategyFilter: String, scope: kotlinx.
 
             Spacer(modifier = Modifier.height(6.dp))
 
-            // Metrics row (compact)
+            // Key metrics (always visible): RSI, Beta, IV
             FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp), modifier = Modifier.fillMaxWidth()) {
                 if (item.rsi != null) {
                     val rsiColor = if (item.rsi < 30) Color(0xFF2E7D32) else if (item.rsi > 70) Color(0xFFC62828) else Color.Gray
@@ -891,18 +891,6 @@ fun ScanResultCard(item: ScanResultItem, strategyFilter: String, scope: kotlinx.
                 if (item.ivRank != null) {
                     Card(colors = CardDefaults.cardColors(containerColor = Color.Gray.copy(alpha = 0.10f)), shape = RoundedCornerShape(6.dp)) {
                         Text("IV ${item.ivRank}", modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp), style = MaterialTheme.typography.labelSmall)
-                    }
-                }
-                if (item.discountFromHigh != null) {
-                    Card(colors = CardDefaults.cardColors(containerColor = Color.Gray.copy(alpha = 0.10f)), shape = RoundedCornerShape(6.dp)) {
-                        Text("↓High ${item.discountFromHigh}", modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp), style = MaterialTheme.typography.labelSmall)
-                    }
-                }
-                if (item.sma200 != null) {
-                    val aboveSma = item.price > item.sma200
-                    val smaColor = if (aboveSma) Color(0xFF2E7D32) else Color(0xFFC62828)
-                    Card(colors = CardDefaults.cardColors(containerColor = smaColor.copy(alpha = 0.12f)), shape = RoundedCornerShape(6.dp)) {
-                        Text("SMA200 ${if (aboveSma) "▲" else "▼"}", modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp), style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold, color = smaColor)
                     }
                 }
             }
@@ -948,31 +936,78 @@ fun ScanResultCard(item: ScanResultItem, strategyFilter: String, scope: kotlinx.
                     }
                 }
             }
-            // Stock summary (expandable)
+            // Summary (always visible)
             if (item.stockSummary != null) {
-                var summaryExpanded by remember { mutableStateOf(false) }
-                val displayText = if (summaryExpanded || item.stockSummary.length <= 80) item.stockSummary
-                    else item.stockSummary.take(80) + "…"
                 Text(
-                    displayText,
+                    item.stockSummary,
                     style = MaterialTheme.typography.bodySmall,
-                    modifier = Modifier.padding(top = 4.dp).clickable { summaryExpanded = !summaryExpanded },
+                    modifier = Modifier.padding(top = 4.dp),
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
 
-            // Bullish / Bearish Signals (compact chips)
-            if (!item.bullishSignals.isNullOrEmpty() || !item.bearishSignals.isNullOrEmpty()) {
-                Spacer(modifier = Modifier.height(4.dp))
-                FlowRow(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    item.bullishSignals?.forEach { signal ->
-                        Card(colors = CardDefaults.cardColors(containerColor = Color(0xFF2E7D32).copy(alpha = 0.12f)), shape = RoundedCornerShape(6.dp)) {
-                            Text("▲ ${abbreviateSignal(signal)}", modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp), style = MaterialTheme.typography.labelSmall, color = Color(0xFF2E7D32))
+            // Expandable details section
+            val hasDetails = item.sma200 != null || item.discountFromHigh != null ||
+                    !item.bullishSignals.isNullOrEmpty() || !item.bearishSignals.isNullOrEmpty()
+            if (hasDetails) {
+                var detailsExpanded by remember { mutableStateOf(false) }
+                Row(
+                    modifier = Modifier.fillMaxWidth().clickable { detailsExpanded = !detailsExpanded }.padding(top = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        if (detailsExpanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp),
+                        tint = MaterialTheme.colorScheme.primary
+                    )
+                    Text(
+                        if (detailsExpanded) "Hide details" else "More details",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.padding(start = 4.dp)
+                    )
+                }
+
+                if (detailsExpanded) {
+                    Spacer(modifier = Modifier.height(4.dp))
+                    // SMA200 & Off High
+                    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        if (item.sma200 != null) {
+                            val aboveSma = item.price > item.sma200
+                            val smaColor = if (aboveSma) Color(0xFF2E7D32) else Color(0xFFC62828)
+                            Card(colors = CardDefaults.cardColors(containerColor = smaColor.copy(alpha = 0.12f)), shape = RoundedCornerShape(6.dp)) {
+                                Text(
+                                    "SMA200 $${"%.2f".format(item.sma200)} ${if (aboveSma) "▲ Above" else "▼ Below"}",
+                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = FontWeight.Bold,
+                                    color = smaColor
+                                )
+                            }
+                        }
+                        if (item.discountFromHigh != null) {
+                            Card(colors = CardDefaults.cardColors(containerColor = Color.Gray.copy(alpha = 0.10f)), shape = RoundedCornerShape(6.dp)) {
+                                Text(
+                                    "Off 52W High: ${item.discountFromHigh}",
+                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                                    style = MaterialTheme.typography.labelSmall
+                                )
+                            }
                         }
                     }
-                    item.bearishSignals?.forEach { signal ->
-                        Card(colors = CardDefaults.cardColors(containerColor = Color(0xFFC62828).copy(alpha = 0.12f)), shape = RoundedCornerShape(6.dp)) {
-                            Text("▼ ${abbreviateSignal(signal)}", modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp), style = MaterialTheme.typography.labelSmall, color = Color(0xFFC62828))
+                    // Bullish signals
+                    if (!item.bullishSignals.isNullOrEmpty()) {
+                        Spacer(modifier = Modifier.height(4.dp))
+                        item.bullishSignals.forEach { signal ->
+                            Text("▲ $signal", style = MaterialTheme.typography.bodySmall, color = Color(0xFF2E7D32))
+                        }
+                    }
+                    // Bearish signals
+                    if (!item.bearishSignals.isNullOrEmpty()) {
+                        Spacer(modifier = Modifier.height(4.dp))
+                        item.bearishSignals.forEach { signal ->
+                            Text("▼ $signal", style = MaterialTheme.typography.bodySmall, color = Color(0xFFC62828))
                         }
                     }
                 }
