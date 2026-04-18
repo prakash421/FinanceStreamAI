@@ -660,7 +660,7 @@ fun ScanScreen() {
                 }
             }
             IconButton(onClick = { showWatchlistDialog = true }) {
-                Icon(Icons.Default.List, contentDescription = "Edit Watchlist")
+                Icon(Icons.Default.EditNote, contentDescription = "Edit Watchlist")
             }
             IconButton(onClick = { showTunerDialog = true }) {
                 Icon(Icons.Default.Settings, contentDescription = "Tune Strategy")
@@ -778,14 +778,24 @@ fun ScanScreen() {
                 Text(buttonText, style = MaterialTheme.typography.labelLarge)
             }
         }
-        // Long-press hint for editing watchlist
+        // Hint for editing watchlist
         if (manualTicker.isBlank()) {
-            Text(
-                "Long-press watchlist icon to edit",
-                style = MaterialTheme.typography.bodySmall,
-                color = Color.Gray,
-                modifier = Modifier.padding(start = 4.dp, top = 2.dp)
-            )
+            Row(
+                modifier = Modifier.padding(start = 4.dp, top = 2.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    "Tap ",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Color.Gray
+                )
+                Icon(Icons.Default.EditNote, contentDescription = null, modifier = Modifier.size(16.dp), tint = Color.Gray)
+                Text(
+                    " to edit watchlist symbols",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Color.Gray
+                )
+            }
         }
 
         Spacer(modifier = Modifier.height(6.dp))
