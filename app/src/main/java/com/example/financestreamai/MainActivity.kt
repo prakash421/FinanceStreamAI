@@ -531,29 +531,54 @@ fun MainScreen(startTab: Int = 0) {
         },
         bottomBar = {
             NavigationBar(tonalElevation = 4.dp) {
+                val scanColor = Color(0xFF4338CA) // Indigo
+                val portfolioColor = Color(0xFF059669) // Emerald
+                val guruColor = Color(0xFF7C3AED) // Purple
+                val alertColor = Color(0xFFD97706) // Amber
+
                 NavigationBarItem(
                     selected = selectedTab == 0,
                     onClick = { selectedTab = 0 },
-                    icon = { Icon(Icons.Default.Search, contentDescription = null) },
-                    label = { Text("Scan") }
+                    icon = { Icon(Icons.Default.Search, contentDescription = null, tint = scanColor) },
+                    label = { Text("Scan", color = scanColor) },
+                    colors = androidx.compose.material3.NavigationBarItemDefaults.colors(
+                        selectedIconColor = scanColor,
+                        selectedTextColor = scanColor,
+                        indicatorColor = Color(0xFFE0E7FF) // Indigo-100
+                    )
                 )
                 NavigationBarItem(
                     selected = selectedTab == 1,
                     onClick = { selectedTab = 1 },
-                    icon = { Icon(Icons.Default.AccountBalance, contentDescription = null) },
-                    label = { Text("Portfolio", maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 11.sp) }
+                    icon = { Icon(Icons.Default.AccountBalance, contentDescription = null, tint = portfolioColor) },
+                    label = { Text("Portfolio", color = portfolioColor, maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 11.sp) },
+                    colors = androidx.compose.material3.NavigationBarItemDefaults.colors(
+                        selectedIconColor = portfolioColor,
+                        selectedTextColor = portfolioColor,
+                        indicatorColor = Color(0xFFD1FAE5) // Emerald-100
+                    )
                 )
                 NavigationBarItem(
                     selected = selectedTab == 2,
                     onClick = { selectedTab = 2 },
-                    icon = { Icon(Icons.Default.TipsAndUpdates, contentDescription = null) },
-                    label = { Text("AI Guru") }
+                    icon = { Icon(Icons.Default.TipsAndUpdates, contentDescription = null, tint = guruColor) },
+                    label = { Text("AI Guru", color = guruColor) },
+                    colors = androidx.compose.material3.NavigationBarItemDefaults.colors(
+                        selectedIconColor = guruColor,
+                        selectedTextColor = guruColor,
+                        indicatorColor = Color(0xFFEDE9FE) // Purple-100
+                    )
                 )
                 NavigationBarItem(
                     selected = selectedTab == 3,
                     onClick = { selectedTab = 3 },
-                    icon = { Icon(Icons.Default.Notifications, contentDescription = null) },
-                    label = { Text("Alerts") }
+                    icon = { Icon(Icons.Default.Notifications, contentDescription = null, tint = alertColor) },
+                    label = { Text("Alerts", color = alertColor) },
+                    colors = androidx.compose.material3.NavigationBarItemDefaults.colors(
+                        selectedIconColor = alertColor,
+                        selectedTextColor = alertColor,
+                        indicatorColor = Color(0xFFFEF3C7) // Amber-100
+                    )
                 )
             }
         }
