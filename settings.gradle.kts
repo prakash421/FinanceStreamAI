@@ -22,5 +22,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "FinanceStreamAI"
+rootProject.name = "StockWizAI"
 include(":app")
