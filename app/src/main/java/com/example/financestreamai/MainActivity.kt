@@ -529,7 +529,7 @@ fun MainScreen(startTab: Int = 0) {
             keyboardController?.hide()
             focusManager.clearFocus()
         },
-        bottomBar = {
+        topBar = {
             NavigationBar(tonalElevation = 4.dp) {
                 val scanColor = Color(0xFF4338CA) // Indigo
                 val portfolioColor = Color(0xFF059669) // Emerald
