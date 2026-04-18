@@ -908,13 +908,27 @@ fun ScanResultCard(item: ScanResultItem, strategyFilter: String, scope: kotlinx.
                     }
                 }
                 if (item.beta != null) {
-                    Card(colors = CardDefaults.cardColors(containerColor = Color.Gray.copy(alpha = 0.10f)), shape = RoundedCornerShape(6.dp)) {
-                        Text("β ${"%.2f".format(item.beta)}", modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp), style = MaterialTheme.typography.labelSmall)
+                    val betaColor = when {
+                        item.beta < 0.8 -> Color(0xFF1565C0)   // Low vol — blue
+                        item.beta <= 1.2 -> Color.Gray          // Normal
+                        item.beta <= 1.8 -> Color(0xFFEF6C00)   // Elevated — orange
+                        else -> Color(0xFFC62828)                // High vol — red
+                    }
+                    Card(colors = CardDefaults.cardColors(containerColor = betaColor.copy(alpha = 0.12f)), shape = RoundedCornerShape(6.dp)) {
+                        Text("β ${"%.2f".format(item.beta)}", modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp), style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold, color = betaColor)
                     }
                 }
                 if (item.ivRank != null) {
-                    Card(colors = CardDefaults.cardColors(containerColor = Color.Gray.copy(alpha = 0.10f)), shape = RoundedCornerShape(6.dp)) {
-                        Text("IV ${item.ivRank}", modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp), style = MaterialTheme.typography.labelSmall)
+                    val ivNum = item.ivRank.replace("%", "").trim().toDoubleOrNull()
+                    val ivColor = when {
+                        ivNum == null -> Color.Gray
+                        ivNum < 25 -> Color(0xFF1565C0)         // Low IV — blue
+                        ivNum <= 50 -> Color.Gray                // Normal
+                        ivNum <= 75 -> Color(0xFF2E7D32)         // High IV — green (good for sellers)
+                        else -> Color(0xFFEF6C00)                // Very high IV — orange
+                    }
+                    Card(colors = CardDefaults.cardColors(containerColor = ivColor.copy(alpha = 0.12f)), shape = RoundedCornerShape(6.dp)) {
+                        Text("IV ${item.ivRank}", modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp), style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold, color = ivColor)
                     }
                 }
             }
