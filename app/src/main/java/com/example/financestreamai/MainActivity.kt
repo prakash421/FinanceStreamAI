@@ -100,6 +100,19 @@ data class VerticalResult(
     @SerializedName("expiry") val expiry: String? = null
 )
 
+data class StockLevels(
+    @SerializedName("atr") val atr: Double? = null,
+    @SerializedName("support") val support: Double? = null,
+    @SerializedName("resistance") val resistance: Double? = null,
+    @SerializedName("swing_high_60d") val swingHigh60d: Double? = null,
+    @SerializedName("swing_low_60d") val swingLow60d: Double? = null,
+    @SerializedName("high_52w") val high52w: Double? = null,
+    @SerializedName("stop_loss") val stopLoss: Double? = null,
+    @SerializedName("target") val target: Double? = null,
+    @SerializedName("risk_reward") val riskReward: Double? = null,
+    @SerializedName("risk_note") val riskNote: String? = null
+)
+
 data class ScanResultItem(
     @SerializedName("ticker") val ticker: String,
     @SerializedName("price") val price: Double,
@@ -116,7 +129,8 @@ data class ScanResultItem(
     @SerializedName("stock_recommendation") val stockRecommendation: String? = null,
     @SerializedName("stock_summary") val stockSummary: String? = null,
     @SerializedName("bullish_signals") val bullishSignals: List<String>? = null,
-    @SerializedName("bearish_signals") val bearishSignals: List<String>? = null
+    @SerializedName("bearish_signals") val bearishSignals: List<String>? = null,
+    @SerializedName("levels") val levels: StockLevels? = null
 )
 
 data class CapitalHealth(
@@ -958,7 +972,8 @@ fun ScanResultCard(item: ScanResultItem, strategyFilter: String, scope: kotlinx.
 
             // Expandable details section
             val hasDetails = item.sma200 != null || item.discountFromHigh != null ||
-                    !item.bullishSignals.isNullOrEmpty() || !item.bearishSignals.isNullOrEmpty()
+                    !item.bullishSignals.isNullOrEmpty() || !item.bearishSignals.isNullOrEmpty() ||
+                    item.levels != null
             if (hasDetails) {
                 var detailsExpanded by remember { mutableStateOf(false) }
                 Row(
@@ -1018,6 +1033,80 @@ fun ScanResultCard(item: ScanResultItem, strategyFilter: String, scope: kotlinx.
                         Spacer(modifier = Modifier.height(4.dp))
                         item.bearishSignals.forEach { signal ->
                             Text("▼ $signal", style = MaterialTheme.typography.bodySmall, color = Color(0xFFC62828))
+                        }
+                    }
+
+                    // Key Levels
+                    if (item.levels != null) {
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Card(
+                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)),
+                            shape = RoundedCornerShape(8.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Column(modifier = Modifier.padding(10.dp)) {
+                                Text("Key Levels", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
+                                Spacer(modifier = Modifier.height(4.dp))
+                                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                    // Left column: Stop Loss, Support, Swing Low
+                                    Column {
+                                        if (item.levels.stopLoss != null) {
+                                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                                Text("\uD83D\uDED1", style = MaterialTheme.typography.labelSmall)
+                                                Text(" Stop: $${"%,.2f".format(item.levels.stopLoss)}", style = MaterialTheme.typography.bodySmall, color = Color(0xFFC62828), fontWeight = FontWeight.Bold)
+                                            }
+                                        }
+                                        if (item.levels.support != null) {
+                                            Text("Support: $${"%,.2f".format(item.levels.support)}", style = MaterialTheme.typography.bodySmall, color = Color(0xFFEF6C00))
+                                        }
+                                        if (item.levels.swingLow60d != null) {
+                                            Text("60d Low: $${"%,.2f".format(item.levels.swingLow60d)}", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+                                        }
+                                    }
+                                    // Right column: Target, Resistance, Swing High
+                                    Column(horizontalAlignment = Alignment.End) {
+                                        if (item.levels.target != null) {
+                                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                                Text("\uD83C\uDFAF", style = MaterialTheme.typography.labelSmall)
+                                                Text(" Target: $${"%,.2f".format(item.levels.target)}", style = MaterialTheme.typography.bodySmall, color = Color(0xFF2E7D32), fontWeight = FontWeight.Bold)
+                                            }
+                                        }
+                                        if (item.levels.resistance != null) {
+                                            Text("Resist: $${"%,.2f".format(item.levels.resistance)}", style = MaterialTheme.typography.bodySmall, color = Color(0xFF1565C0))
+                                        }
+                                        if (item.levels.swingHigh60d != null) {
+                                            Text("60d High: $${"%,.2f".format(item.levels.swingHigh60d)}", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+                                        }
+                                    }
+                                }
+                                // Risk/Reward + ATR row
+                                if (item.levels.riskReward != null || item.levels.atr != null) {
+                                    Spacer(modifier = Modifier.height(4.dp))
+                                    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                                        if (item.levels.riskReward != null) {
+                                            val rrColor = if (item.levels.riskReward >= 2.0) Color(0xFF2E7D32) else if (item.levels.riskReward >= 1.0) Color(0xFFEF6C00) else Color(0xFFC62828)
+                                            Card(colors = CardDefaults.cardColors(containerColor = rrColor.copy(alpha = 0.12f)), shape = RoundedCornerShape(6.dp)) {
+                                                Text("R:R ${"%,.2f".format(item.levels.riskReward)}", modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp), style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold, color = rrColor)
+                                            }
+                                        }
+                                        if (item.levels.atr != null) {
+                                            Card(colors = CardDefaults.cardColors(containerColor = Color.Gray.copy(alpha = 0.10f)), shape = RoundedCornerShape(6.dp)) {
+                                                Text("ATR $${"%,.2f".format(item.levels.atr)}", modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp), style = MaterialTheme.typography.labelSmall)
+                                            }
+                                        }
+                                        if (item.levels.high52w != null) {
+                                            Card(colors = CardDefaults.cardColors(containerColor = Color.Gray.copy(alpha = 0.10f)), shape = RoundedCornerShape(6.dp)) {
+                                                Text("52W Hi $${"%,.2f".format(item.levels.high52w)}", modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp), style = MaterialTheme.typography.labelSmall)
+                                            }
+                                        }
+                                    }
+                                }
+                                // Risk note
+                                if (item.levels.riskNote != null) {
+                                    Spacer(modifier = Modifier.height(4.dp))
+                                    Text(item.levels.riskNote, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                }
+                            }
                         }
                     }
                 }
