@@ -712,6 +712,64 @@ fun ScanScreen() {
         Button(
             onClick = {
                 keyboardController?.hide()
+                if (manualTicker.isBlank()) return@Button
+                scope.launch {
+                    try {
+                        isLoading = true
+                        scanResults = emptyList()
+                        scanError = null
+                        scanProgress = "Scanning ${manualTicker}..."
+
+                        val strategyParam = when (selectedStrategy) {
+                            "CSPs" -> "csp"
+                            "Diagonals" -> "diagonal"
+                            "Verticals" -> "vertical"
+                            "Long LEAPS" -> "long_leaps"
+                            else -> null
+                        }
+                        val deltaParam = targetDelta.toDoubleOrNull()
+                        val rocParam = minRoc.toDoubleOrNull()
+
+                        val results = apiService.getScanResults(
+                            tickers = manualTicker,
+                            strategy = strategyParam,
+                            targetDelta = deltaParam,
+                            minRoc = rocParam
+                        )
+                        scanResults = results
+                        if (results.isEmpty()) {
+                            scanError = "No opportunities found for this ticker."
+                        }
+                    } catch (e: Exception) {
+                        Log.e("API_ERROR", "Scan failed: ${e.message}")
+                        scanError = friendlyErrorMessage(e)
+                    } finally {
+                        isLoading = false
+                        scanProgress = ""
+                    }
+                }
+            },
+            modifier = Modifier.fillMaxWidth().height(48.dp),
+            enabled = !isLoading && manualTicker.isNotBlank(),
+            shape = RoundedCornerShape(12.dp)
+        ) {
+            if (isLoading && scanProgress.contains("Scanning")) {
+                CircularProgressIndicator(modifier = Modifier.size(20.dp), color = Color.White, strokeWidth = 2.dp)
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(scanProgress, style = MaterialTheme.typography.labelLarge)
+            } else {
+                Icon(Icons.Default.Search, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(modifier = Modifier.width(6.dp))
+                Text("Scan Stocks", style = MaterialTheme.typography.labelLarge)
+            }
+        }
+
+        Spacer(modifier = Modifier.height(6.dp))
+
+        // Scan Watchlist Button
+        Button(
+            onClick = {
+                keyboardController?.hide()
                 scope.launch {
                     try {
                         isLoading = true
@@ -729,51 +787,33 @@ fun ScanScreen() {
                         val deltaParam = targetDelta.toDoubleOrNull()
                         val rocParam = minRoc.toDoubleOrNull()
 
-                        Log.d("SCAN_LOGIC", "Starting scan with strategy=$strategyParam, delta=$deltaParam, roc=$rocParam")
+                        val batches = watchlist.chunked(5)
+                        val combinedResults = mutableListOf<ScanResultItem>()
+                        var failedBatches = 0
 
-                        if (manualTicker.isNotBlank()) {
-                            scanProgress = "Scanning ${manualTicker}..."
-                            val results = apiService.getScanResults(
-                                tickers = manualTicker,
-                                strategy = strategyParam,
-                                targetDelta = deltaParam,
-                                minRoc = rocParam
-                            )
-                            Log.d("SCAN_LOGIC", "Manual scan for $manualTicker returned ${results.size} items")
-                            scanResults = results
-                        } else {
-                            val batches = watchlist.chunked(5)
-                            val combinedResults = mutableListOf<ScanResultItem>()
-                            var failedBatches = 0
-
-                            for ((index, batch) in batches.withIndex()) {
-                                val batchString = batch.joinToString(",")
-                                scanProgress = "Scanning batch ${index + 1} of ${batches.size} (${batch.size} symbols)..."
-                                Log.d("SCAN_LOGIC", "Requesting batch ${index + 1}/${batches.size}: $batchString")
-                                try {
-                                    val batchResults = apiService.getScanResults(
-                                        tickers = batchString,
-                                        strategy = strategyParam,
-                                        targetDelta = deltaParam,
-                                        minRoc = rocParam
-                                    )
-                                    Log.d("SCAN_LOGIC", "Batch ${index + 1} returned ${batchResults.size} items")
-                                    combinedResults.addAll(batchResults)
-                                } catch (e: Exception) {
-                                    failedBatches++
-                                    Log.e("SCAN_LOGIC", "Batch ${index + 1} failed: ${e.message}")
-                                }
-                            }
-                            scanResults = combinedResults
-
-                            if (failedBatches > 0 && combinedResults.isNotEmpty()) {
-                                scanError = "$failedBatches of ${batches.size} batches failed. Showing partial results."
-                            } else if (failedBatches > 0 && combinedResults.isEmpty()) {
-                                scanError = "All batches failed. The server may be slow — please try again."
+                        for ((index, batch) in batches.withIndex()) {
+                            val batchString = batch.joinToString(",")
+                            scanProgress = "Batch ${index + 1} of ${batches.size} (${batch.size} symbols)..."
+                            try {
+                                val batchResults = apiService.getScanResults(
+                                    tickers = batchString,
+                                    strategy = strategyParam,
+                                    targetDelta = deltaParam,
+                                    minRoc = rocParam
+                                )
+                                combinedResults.addAll(batchResults)
+                            } catch (e: Exception) {
+                                failedBatches++
+                                Log.e("SCAN_LOGIC", "Batch ${index + 1} failed: ${e.message}")
                             }
                         }
+                        scanResults = combinedResults
 
-                        if (scanResults.isEmpty() && scanError == null) {
+                        if (failedBatches > 0 && combinedResults.isNotEmpty()) {
+                            scanError = "$failedBatches of ${batches.size} batches failed. Showing partial results."
+                        } else if (failedBatches > 0 && combinedResults.isEmpty()) {
+                            scanError = "All batches failed. The server may be slow — please try again."
+                        } else if (combinedResults.isEmpty()) {
                             scanError = "No opportunities found. Try adjusting tuner parameters or your watchlist."
                         }
                     } catch (e: Exception) {
@@ -787,17 +827,17 @@ fun ScanScreen() {
             },
             modifier = Modifier.fillMaxWidth().height(48.dp),
             enabled = !isLoading,
-            shape = RoundedCornerShape(12.dp)
+            shape = RoundedCornerShape(12.dp),
+            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF059669))
         ) {
-            if (isLoading) {
+            if (isLoading && scanProgress.contains("Batch")) {
                 CircularProgressIndicator(modifier = Modifier.size(20.dp), color = Color.White, strokeWidth = 2.dp)
                 Spacer(modifier = Modifier.width(8.dp))
-                Text(if (scanProgress.isNotBlank()) scanProgress else "Loading...", style = MaterialTheme.typography.labelLarge)
+                Text(scanProgress, style = MaterialTheme.typography.labelLarge)
             } else {
-                Icon(Icons.Default.Search, contentDescription = null, modifier = Modifier.size(18.dp))
+                Icon(Icons.Default.Checklist, contentDescription = null, modifier = Modifier.size(18.dp))
                 Spacer(modifier = Modifier.width(6.dp))
-                val buttonText = if (manualTicker.isNotBlank()) "Scan Ticker" else "Scan Watchlist"
-                Text(buttonText, style = MaterialTheme.typography.labelLarge)
+                Text("Scan Watchlist (${watchlist.size} symbols)", style = MaterialTheme.typography.labelLarge)
             }
         }
 
