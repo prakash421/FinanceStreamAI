@@ -50,7 +50,7 @@ class ScanWorker(context: Context, params: WorkerParameters) : CoroutineWorker(c
         val tickerList = matches.take(5).joinToString(", ") { it.ticker }
         val notification = NotificationCompat.Builder(applicationContext, channelId)
             .setSmallIcon(android.R.drawable.ic_dialog_info)
-            .setContentTitle("New AlphaStream Matches!")
+            .setContentTitle("StockWiz AI — New Matches!")
             .setContentText("Found potential trades for: $tickerList")
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setAutoCancel(true)
