@@ -9,6 +9,7 @@ import androidx.activity.compose.setContent
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
@@ -307,6 +308,39 @@ private fun friendlyErrorMessage(e: Exception): String {
         }
         is java.io.IOException -> "Connection lost. Please check your network and try again."
         else -> e.message ?: "An unexpected error occurred. Please try again."
+    }
+}
+
+// ==========================================
+// SIGNAL ABBREVIATION (compact display)
+// ==========================================
+private fun abbreviateSignal(signal: String): String {
+    val s = signal.trim()
+    return when {
+        s.contains("200-day SMA", true) || s.contains("SMA200", true) || s.contains("200 SMA", true) ->
+            if (s.contains("above", true)) "↑SMA200" else "↓SMA200"
+        s.contains("50-day SMA", true) || s.contains("SMA50", true) || s.contains("50 SMA", true) ->
+            if (s.contains("above", true)) "↑SMA50" else "↓SMA50"
+        s.contains("oversold", true) -> "RSI↓"
+        s.contains("overbought", true) -> "RSI↑"
+        s.contains("golden cross", true) -> "GoldenX"
+        s.contains("death cross", true) -> "DeathX"
+        s.contains("MACD", true) -> if (s.contains("bull", true) || s.contains("above", true) || s.contains("positive", true)) "MACD+" else "MACD−"
+        s.contains("momentum", true) -> if (s.contains("positive", true) || s.contains("bull", true) || s.contains("strong", true)) "Mom+" else "Mom−"
+        s.contains("volume", true) -> if (s.contains("high", true) || s.contains("above", true) || s.contains("increas", true)) "Vol↑" else "Vol↓"
+        s.contains("52-week", true) || s.contains("52 week", true) ->
+            if (s.contains("near", true) || s.contains("high", true)) "52W↑" else "52W↓"
+        s.contains("breakout", true) -> "Brk↑"
+        s.contains("breakdown", true) -> "Brk↓"
+        s.contains("support", true) -> "Sup"
+        s.contains("resistance", true) -> "Res"
+        s.contains("dividend", true) -> "Div"
+        s.contains("earnings", true) -> "Earn"
+        s.contains("uptrend", true) || s.contains("up trend", true) -> "Trend↑"
+        s.contains("downtrend", true) || s.contains("down trend", true) -> "Trend↓"
+        s.contains("bollinger", true) -> "BBand"
+        s.length > 14 -> s.take(12) + "…"
+        else -> s
     }
 }
 
@@ -839,22 +873,36 @@ fun ScanResultCard(item: ScanResultItem, strategyFilter: String, scope: kotlinx.
 
             Spacer(modifier = Modifier.height(6.dp))
 
-            // Metrics row
-            Row(horizontalArrangement = Arrangement.spacedBy(16.dp), modifier = Modifier.fillMaxWidth()) {
+            // Metrics row (compact)
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp), modifier = Modifier.fillMaxWidth()) {
                 if (item.rsi != null) {
-                    val rsiColor = if (item.rsi < 30) Color(0xFF2E7D32) else if (item.rsi > 70) Color(0xFFC62828) else Color.Unspecified
-                    Text("RSI ${"%.0f".format(item.rsi)}", style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Medium, color = rsiColor)
+                    val rsiColor = if (item.rsi < 30) Color(0xFF2E7D32) else if (item.rsi > 70) Color(0xFFC62828) else Color.Gray
+                    Card(colors = CardDefaults.cardColors(containerColor = rsiColor.copy(alpha = 0.12f)), shape = RoundedCornerShape(6.dp)) {
+                        Text("RSI ${"%.0f".format(item.rsi)}", modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp), style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold, color = rsiColor)
+                    }
                 }
-                if (item.beta != null) Text("Beta ${"%.2f".format(item.beta)}", style = MaterialTheme.typography.bodySmall)
-                if (item.ivRank != null) Text("IV ${item.ivRank}", style = MaterialTheme.typography.bodySmall)
-                if (item.discountFromHigh != null) Text("Off High ${item.discountFromHigh}", style = MaterialTheme.typography.bodySmall)
-            }
-            if (item.sma200 != null) {
-                val aboveSma = item.price > item.sma200
-                Text(
-                    "SMA200 $${"%.2f".format(item.sma200)} ${if (aboveSma) "▲" else "▼"}",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = if (aboveSma) Color(0xFF2E7D32) else Color(0xFFC62828))
+                if (item.beta != null) {
+                    Card(colors = CardDefaults.cardColors(containerColor = Color.Gray.copy(alpha = 0.10f)), shape = RoundedCornerShape(6.dp)) {
+                        Text("β ${"%.2f".format(item.beta)}", modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp), style = MaterialTheme.typography.labelSmall)
+                    }
+                }
+                if (item.ivRank != null) {
+                    Card(colors = CardDefaults.cardColors(containerColor = Color.Gray.copy(alpha = 0.10f)), shape = RoundedCornerShape(6.dp)) {
+                        Text("IV ${item.ivRank}", modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp), style = MaterialTheme.typography.labelSmall)
+                    }
+                }
+                if (item.discountFromHigh != null) {
+                    Card(colors = CardDefaults.cardColors(containerColor = Color.Gray.copy(alpha = 0.10f)), shape = RoundedCornerShape(6.dp)) {
+                        Text("↓High ${item.discountFromHigh}", modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp), style = MaterialTheme.typography.labelSmall)
+                    }
+                }
+                if (item.sma200 != null) {
+                    val aboveSma = item.price > item.sma200
+                    val smaColor = if (aboveSma) Color(0xFF2E7D32) else Color(0xFFC62828)
+                    Card(colors = CardDefaults.cardColors(containerColor = smaColor.copy(alpha = 0.12f)), shape = RoundedCornerShape(6.dp)) {
+                        Text("SMA200 ${if (aboveSma) "▲" else "▼"}", modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp), style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold, color = smaColor)
+                    }
+                }
             }
 
             // Stock Recommendation Badge + Summary
@@ -898,26 +946,31 @@ fun ScanResultCard(item: ScanResultItem, strategyFilter: String, scope: kotlinx.
                     }
                 }
             }
+            // Stock summary (expandable)
             if (item.stockSummary != null) {
-                Text(item.stockSummary, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 4.dp))
+                var summaryExpanded by remember { mutableStateOf(false) }
+                val displayText = if (summaryExpanded || item.stockSummary.length <= 80) item.stockSummary
+                    else item.stockSummary.take(80) + "…"
+                Text(
+                    displayText,
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier.padding(top = 4.dp).clickable { summaryExpanded = !summaryExpanded },
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
             }
 
-            // Bullish / Bearish Signals
+            // Bullish / Bearish Signals (compact chips)
             if (!item.bullishSignals.isNullOrEmpty() || !item.bearishSignals.isNullOrEmpty()) {
                 Spacer(modifier = Modifier.height(4.dp))
-                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-                    if (!item.bullishSignals.isNullOrEmpty()) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            item.bullishSignals.forEach { signal ->
-                                Text("\u25B2 $signal", style = MaterialTheme.typography.bodySmall, color = Color(0xFF2E7D32))
-                            }
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    item.bullishSignals?.forEach { signal ->
+                        Card(colors = CardDefaults.cardColors(containerColor = Color(0xFF2E7D32).copy(alpha = 0.12f)), shape = RoundedCornerShape(6.dp)) {
+                            Text("▲ ${abbreviateSignal(signal)}", modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp), style = MaterialTheme.typography.labelSmall, color = Color(0xFF2E7D32))
                         }
                     }
-                    if (!item.bearishSignals.isNullOrEmpty()) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            item.bearishSignals.forEach { signal ->
-                                Text("\u25BC $signal", style = MaterialTheme.typography.bodySmall, color = Color(0xFFC62828))
-                            }
+                    item.bearishSignals?.forEach { signal ->
+                        Card(colors = CardDefaults.cardColors(containerColor = Color(0xFFC62828).copy(alpha = 0.12f)), shape = RoundedCornerShape(6.dp)) {
+                            Text("▼ ${abbreviateSignal(signal)}", modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp), style = MaterialTheme.typography.labelSmall, color = Color(0xFFC62828))
                         }
                     }
                 }
