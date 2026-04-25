@@ -2026,45 +2026,32 @@ fun ScanResultCard(
                         Text("IV ${item.ivRank}", modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp), style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold, color = ivColor)
                     }
                 }
-                // Sector chip
-                if (item.sector != null) {
-                    Card(colors = CardDefaults.cardColors(containerColor = Color(0xFF7C3AED).copy(alpha = 0.12f)), shape = RoundedCornerShape(6.dp)) {
-                        Text(item.sector, modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp), style = MaterialTheme.typography.labelSmall, color = Color(0xFF7C3AED))
-                    }
-                }
                 // Earnings date chip
                 if (item.nextEarningsDate != null) {
                     Card(colors = CardDefaults.cardColors(containerColor = Color(0xFFD97706).copy(alpha = 0.12f)), shape = RoundedCornerShape(6.dp)) {
                         Text("📅 Earnings ${item.nextEarningsDate}", modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp), style = MaterialTheme.typography.labelSmall, color = Color(0xFFD97706))
                     }
                 }
-                // Analyst consensus + mean target price
-                if (item.analystTarget != null &&
-                    (item.analystTarget.mean != null || item.analystTarget.consensus != null)) {
+                // Analyst target price chip (consensus shown separately in recommendation badge below)
+                if (item.analystTarget?.mean != null) {
                     val at = item.analystTarget
-                    val consensusColor = when (at.consensus?.lowercase()) {
-                        "strong buy"  -> Color(0xFF1B5E20)
-                        "buy"         -> Color(0xFF2E7D32)
-                        "hold"        -> Color(0xFFEF6C00)
-                        "sell"        -> Color(0xFFC62828)
-                        "strong sell" -> Color(0xFFB71C1C)
-                        else -> if ((at.upsidePct ?: 0.0) >= 15.0) Color(0xFF2E7D32)
-                                else if ((at.upsidePct ?: 0.0) >= 0.0) Color(0xFF1565C0)
-                                else Color(0xFFC62828)
+                    val targetColor = when {
+                        (at.upsidePct ?: 0.0) >= 15.0 -> Color(0xFF2E7D32)
+                        (at.upsidePct ?: 0.0) >= 0.0  -> Color(0xFF1565C0)
+                        else                           -> Color(0xFFC62828)
                     }
                     val parts = buildList {
-                        if (at.consensus != null) add(at.consensus)
-                        if (at.mean != null) add("Target $${"%.0f".format(at.mean)}")
-                        if (at.upsidePct != null) add("${"%+.0f".format(at.upsidePct)}%")
+                        add("Analyst Target: $${"%.0f".format(at.mean)}")
+                        if (at.upsidePct != null) add("${"%+.0f".format(at.upsidePct)}% from today")
                         if (at.numAnalysts != null) add("${at.numAnalysts} analysts")
                     }
-                    Card(colors = CardDefaults.cardColors(containerColor = consensusColor.copy(alpha = 0.12f)), shape = RoundedCornerShape(6.dp)) {
+                    Card(colors = CardDefaults.cardColors(containerColor = targetColor.copy(alpha = 0.12f)), shape = RoundedCornerShape(6.dp)) {
                         Text(
                             parts.joinToString(" · "),
                             modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
                             style = MaterialTheme.typography.labelSmall,
                             fontWeight = FontWeight.Bold,
-                            color = consensusColor
+                            color = targetColor
                         )
                     }
                 }
