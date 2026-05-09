@@ -1,0 +1,48 @@
+{
+  "project_info": {
+    "project_number": "221128399172",
+    "firebase_url": "https://financestreamai-default-rtdb.firebaseio.com",
+    "project_id": "financestreamai",
+    "storage_bucket": "financestreamai.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:221128399172:android:295b2f4f67e1548a9bdf11",
+        "android_client_info": {
+          "package_name": "com.example.financestreamai"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "221128399172-ka2venipjrl8e8v4loiri69f1mfiarqe.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.example.financestreamai",
+            "certificate_hash": "6cc023513e807f50032b02fcc92b08a3261888db"
+          }
+        },
+        {
+          "client_id": "221128399172-0opj7q562kgnebtmu0gmfqj610hokh9j.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAgU8-PT5_baFTUv3fttilFv7_1aF7ZsAk"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "221128399172-0opj7q562kgnebtmu0gmfqj610hokh9j.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

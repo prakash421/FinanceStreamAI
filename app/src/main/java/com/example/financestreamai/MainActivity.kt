@@ -63,6 +63,8 @@ import com.google.gson.stream.JsonWriter
 import com.google.gson.reflect.TypeToken
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -554,6 +556,14 @@ val retrofit: Retrofit = Retrofit.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)
         .readTimeout(120, TimeUnit.SECONDS)
         .writeTimeout(15, TimeUnit.SECONDS)
+        // OkHttp defaults to maxRequestsPerHost=5 which throttles parallel
+        // watchlist scan jobs (multiple async POST + concurrent polling on
+        // the same host). Raise the per-host cap so chunked scans actually
+        // run in parallel instead of serialising in the dispatcher queue.
+        .dispatcher(okhttp3.Dispatcher().apply {
+            maxRequests = 64
+            maxRequestsPerHost = 24
+        })
         .build()
     )
     .addConverterFactory(GsonConverterFactory.create(gson))
@@ -605,6 +615,41 @@ private fun friendlyErrorMessage(e: Exception): String {
         is java.io.IOException -> "Connection lost. Please check your network and try again."
         else -> e.message ?: "An unexpected error occurred. Please try again."
     }
+}
+
+/**
+ * Split a watchlist into chunks for parallel async-scan jobs. Backend processes
+ * each job's tickers serially (Tradier rate-limit per worker), so N parallel
+ * jobs ≈ Nx wall-clock speedup on large watchlists.
+ *
+ * Strategy:
+ *   - <= 6 tickers: single chunk (parallelism overhead > benefit)
+ *   - else: target [maxParallel] (default 6) chunks, balanced ±1 in size,
+ *     with chunk size at least [minChunk] (default 4) to avoid death-by-a-
+ *     thousand-tiny-jobs.
+ *
+ * Returned chunks are non-empty and partition the input order-preserving.
+ */
+internal fun chunkWatchlistForParallelScan(
+    tickers: List<String>,
+    maxParallel: Int = 6,
+    minChunk: Int = 4
+): List<List<String>> {
+    if (tickers.isEmpty()) return emptyList()
+    if (tickers.size <= minChunk + 2) return listOf(tickers.toList())
+    val target = maxParallel.coerceAtLeast(1)
+    // numChunks = min(target, ceil(size / minChunk))
+    val numChunks = minOf(target, (tickers.size + minChunk - 1) / minChunk).coerceAtLeast(1)
+    val baseSize = tickers.size / numChunks
+    val remainder = tickers.size % numChunks
+    val chunks = ArrayList<List<String>>(numChunks)
+    var start = 0
+    for (i in 0 until numChunks) {
+        val take = baseSize + if (i < remainder) 1 else 0
+        chunks.add(tickers.subList(start, start + take).toList())
+        start += take
+    }
+    return chunks
 }
 
 /**
@@ -2367,7 +2412,11 @@ fun ScanScreen() {
 
         Spacer(modifier = Modifier.height(6.dp))
 
-        // Scan Watchlist Button (uses async scan with polling)
+        // Scan Watchlist Button — splits the watchlist into N chunks and
+        // runs them as concurrent async-scan jobs. Backend processes each
+        // job's tickers serially (Tradier rate-limit per worker), so N
+        // parallel jobs ~= Nx throughput. Results stream in progressively
+        // as each chunk finishes.
         Button(
             onClick = {
                 keyboardController?.hide()
@@ -2385,71 +2434,89 @@ fun ScanScreen() {
                             else -> null
                         }
 
-                        // Start async scan
-                        val asyncResp = withContext(Dispatchers.IO) {
-                            apiService.scanAsync(
-                                tickers = watchlist.joinToString(","),
-                                strategy = strategyParam
-                            )
-                        }
-                        val jobId = asyncResp.jobId
-                        val total = asyncResp.totalTickers ?: watchlist.size
-                        scanProgress = "Scanning 0/$total symbols..."
+                        val chunks = chunkWatchlistForParallelScan(watchlist)
+                        val total = watchlist.size
+                        // Per-chunk progress counters (atomic-ish via main-thread mutation).
+                        val perChunkScanned = IntArray(chunks.size)
+                        val combined = mutableListOf<ScanResultItem>()
+                        val seenKeys = mutableSetOf<String>()
+                        scanProgress = "Scanning 0/$total symbols (${chunks.size} parallel jobs)..."
 
-                        // Poll for results — start fast (small scans often
-                        // complete inside 2-3s), back off gradually so we
-                        // don't hammer the backend on long scans.
-                        var pollCount = 0
-                        while (true) {
-                            val pollDelay = when {
-                                pollCount < 3 -> 500L    // 0.5s for first 1.5s
-                                pollCount < 8 -> 1000L   // then 1s for next 5s
-                                else -> 2000L            // then 2s steady-state
-                            }
-                            delay(pollDelay)
-                            pollCount++
-                            val body = withContext(Dispatchers.IO) {
-                                apiService.getScanStatus(jobId).string()
-                            }
-                            // Check if response is the status object or the final results array
-                            if (body.trimStart().startsWith("[")) {
-                                // Final results array
-                                val results: List<ScanResultItem> = gson.fromJson(body, scanListType)
-                                scanResults = results
-                                if (results.isEmpty()) {
-                                    scanError = "No opportunities found. Try adjusting tuner parameters or your watchlist."
+                        coroutineScope {
+                            chunks.mapIndexed { idx, chunk ->
+                                async(Dispatchers.IO) {
+                                    try {
+                                        val resp = apiService.scanAsync(
+                                            tickers = chunk.joinToString(","),
+                                            strategy = strategyParam
+                                        )
+                                        val jobId = resp.jobId
+                                        val chunkTotal = resp.totalTickers ?: chunk.size
+                                        var pollCount = 0
+                                        while (true) {
+                                            val pollDelay = when {
+                                                pollCount < 4 -> 400L
+                                                pollCount < 10 -> 900L
+                                                else -> 1800L
+                                            }
+                                            delay(pollDelay)
+                                            pollCount++
+                                            val body = apiService.getScanStatus(jobId).string()
+                                            if (body.trimStart().startsWith("[")) {
+                                                val results: List<ScanResultItem> = gson.fromJson(body, scanListType)
+                                                // Merge progressively on the main thread.
+                                                withContext(Dispatchers.Main) {
+                                                    perChunkScanned[idx] = chunkTotal
+                                                    val newOnes = results.filter { item -> seenKeys.add(item.ticker) }
+                                                    if (newOnes.isNotEmpty()) {
+                                                        combined.addAll(newOnes)
+                                                        scanResults = combined.toList()
+                                                    }
+                                                    val done = perChunkScanned.sum()
+                                                    scanProgress = "Scanning $done/$total symbols..."
+                                                }
+                                                return@async
+                                            } else {
+                                                val status = gson.fromJson(body, AsyncScanStatus::class.java)
+                                                withContext(Dispatchers.Main) {
+                                                    perChunkScanned[idx] = (status.tickersScanned ?: 0).coerceAtMost(chunkTotal)
+                                                    val done = perChunkScanned.sum()
+                                                    scanProgress = "Scanning $done/$total symbols..."
+                                                }
+                                                if (status.status == "complete" || status.status == "failed") return@async
+                                            }
+                                        }
+                                    } catch (e: Exception) {
+                                        Log.w("API_ERROR", "Chunk ${idx + 1}/${chunks.size} async failed: ${e.message}; falling back to sync")
+                                        // Per-chunk fallback to synchronous /scan endpoint so a
+                                        // single bad chunk doesn't tank the whole scan.
+                                        try {
+                                            val results = apiService.getScanResults(
+                                                tickers = chunk.joinToString(","),
+                                                strategy = strategyParam
+                                            )
+                                            withContext(Dispatchers.Main) {
+                                                perChunkScanned[idx] = chunk.size
+                                                val newOnes = results.filter { item -> seenKeys.add(item.ticker) }
+                                                if (newOnes.isNotEmpty()) {
+                                                    combined.addAll(newOnes)
+                                                    scanResults = combined.toList()
+                                                }
+                                            }
+                                        } catch (_: Exception) {
+                                            // swallow — partial results from other chunks are still useful
+                                        }
+                                    }
                                 }
-                                break
-                            } else {
-                                // Status object
-                                val status = gson.fromJson(body, AsyncScanStatus::class.java)
-                                scanProgress = "Scanning ${status.tickersScanned ?: 0}/${status.totalTickers ?: total} symbols..."
-                                if (status.status == "complete" || status.status == "failed") break
-                            }
+                            }.awaitAll()
+                        }
+
+                        if (combined.isEmpty()) {
+                            scanError = "No opportunities found. Try adjusting tuner parameters or your watchlist."
                         }
                     } catch (e: Exception) {
-                        Log.e("API_ERROR", "Async scan failed: ${e.message}")
-                        // Fallback to batch scan
-                        scanProgress = "Trying batch scan..."
-                        try {
-                            val strategyParam = when (selectedStrategy) {
-                                "CSPs" -> "csp"; "Diagonals" -> "diagonal"
-                                "Verticals" -> "vertical"; "Long LEAPS" -> "long_leaps"
-                                else -> null
-                            }
-                            val batches = watchlist.chunked(5)
-                            val combinedResults = mutableListOf<ScanResultItem>()
-                            for ((index, batch) in batches.withIndex()) {
-                                scanProgress = "Batch ${index + 1}/${batches.size}..."
-                                try {
-                                    combinedResults.addAll(apiService.getScanResults(tickers = batch.joinToString(","), strategy = strategyParam))
-                                } catch (_: Exception) { }
-                            }
-                            scanResults = combinedResults
-                            if (combinedResults.isEmpty()) scanError = "No results found."
-                        } catch (e2: Exception) {
-                            scanError = friendlyErrorMessage(e2)
-                        }
+                        Log.e("API_ERROR", "Watchlist scan failed: ${e.message}")
+                        scanError = friendlyErrorMessage(e)
                     } finally {
                         isLoading = false
                         scanProgress = ""

@@ -1,0 +1,934 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>FinanceStreamAI — System Architecture</title>
+<style>
+  :root {
+    --bg: #0f172a;
+    --panel: #1e293b;
+    --panel-2: #273449;
+    --accent: #38bdf8;
+    --accent-2: #22d3ee;
+    --good: #22c55e;
+    --warn: #f59e0b;
+    --bad: #ef4444;
+    --text: #e2e8f0;
+    --muted: #94a3b8;
+    --border: #334155;
+    --code-bg: #0b1224;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; line-height: 1.6; }
+  header {
+    background: linear-gradient(135deg, #0ea5e9 0%, #6366f1 100%);
+    padding: 36px 24px; text-align: center; box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+  }
+  header h1 { margin: 0 0 8px; font-size: 2.2rem; }
+  header p { margin: 0; color: rgba(255,255,255,0.85); font-size: 1.05rem; }
+  .container { max-width: 1180px; margin: 0 auto; padding: 24px; }
+  nav.toc {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
+    padding: 18px 24px; margin: 24px 0;
+  }
+  nav.toc h2 { margin-top: 0; color: var(--accent); font-size: 1.1rem; }
+  nav.toc ol { columns: 2; column-gap: 32px; margin: 0; padding-left: 20px; }
+  nav.toc a { color: var(--text); text-decoration: none; }
+  nav.toc a:hover { color: var(--accent-2); text-decoration: underline; }
+  section {
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 12px; padding: 24px 28px; margin: 20px 0;
+  }
+  section h2 {
+    color: var(--accent); border-bottom: 2px solid var(--border);
+    padding-bottom: 10px; margin-top: 0; font-size: 1.6rem;
+  }
+  section h3 { color: var(--accent-2); margin-top: 28px; font-size: 1.2rem; }
+  section h4 { color: #cbd5e1; margin-top: 20px; font-size: 1.02rem; }
+  code, pre {
+    font-family: "JetBrains Mono", "Fira Code", Consolas, Monaco, monospace;
+    font-size: 0.88rem;
+  }
+  code { background: var(--code-bg); padding: 2px 6px; border-radius: 4px; color: #e0f2fe; }
+  pre {
+    background: var(--code-bg); padding: 16px; border-radius: 8px;
+    overflow-x: auto; border: 1px solid var(--border);
+  }
+  pre code { background: transparent; padding: 0; }
+  table { width: 100%; border-collapse: collapse; margin: 12px 0 18px; font-size: 0.92rem; }
+  th, td {
+    border: 1px solid var(--border); padding: 8px 10px;
+    text-align: left; vertical-align: top;
+  }
+  th { background: var(--panel-2); color: var(--accent-2); font-weight: 600; }
+  tr:nth-child(even) td { background: rgba(255,255,255,0.02); }
+  .badge {
+    display: inline-block; padding: 2px 8px; border-radius: 999px;
+    font-size: 0.78rem; font-weight: 600; margin-right: 4px;
+  }
+  .badge.get { background: #064e3b; color: #6ee7b7; }
+  .badge.post { background: #1e3a8a; color: #93c5fd; }
+  .badge.put { background: #78350f; color: #fcd34d; }
+  .badge.delete { background: #7f1d1d; color: #fca5a5; }
+  .badge.tag { background: #334155; color: #cbd5e1; }
+  .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .card {
+    background: var(--panel-2); border: 1px solid var(--border);
+    border-radius: 8px; padding: 14px 16px;
+  }
+  .card h4 { margin: 0 0 8px; color: var(--accent); }
+  ul, ol { padding-left: 22px; }
+  li { margin: 4px 0; }
+  blockquote {
+    border-left: 4px solid var(--accent); margin: 12px 0;
+    padding: 8px 16px; background: rgba(56, 189, 248, 0.08);
+    color: var(--muted); border-radius: 0 6px 6px 0;
+  }
+  .pill-good { color: var(--good); font-weight: 600; }
+  .pill-warn { color: var(--warn); font-weight: 600; }
+  .pill-bad { color: var(--bad); font-weight: 600; }
+
+  /* Block diagram */
+  .diagram { background: #0b1224; border: 1px solid var(--border); border-radius: 12px; padding: 18px; overflow-x: auto; }
+  .diagram svg { display: block; margin: 0 auto; min-width: 1000px; }
+
+  footer { text-align: center; padding: 30px 16px; color: var(--muted); font-size: 0.88rem; }
+
+  @media (max-width: 760px) {
+    nav.toc ol { columns: 1; }
+    .grid-2 { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>FinanceStreamAI — System Architecture</h1>
+  <p>Android Client · FastAPI Backend (Render) · Cloud Firestore · AI Cross-Validation Loop</p>
+  <p style="font-size:0.9rem;opacity:0.75;margin-top:6px;">Generated April 25, 2026</p>
+</header>
+
+<div class="container">
+
+<nav class="toc">
+  <h2>Table of Contents</h2>
+  <ol>
+    <li><a href="#overview">High-Level Overview</a></li>
+    <li><a href="#diagram">Block Diagram (Component Flow)</a></li>
+    <li><a href="#android">Android App Architecture</a></li>
+    <li><a href="#backend">Backend Architecture (FastAPI on Render)</a></li>
+    <li><a href="#deployment">Render Deployment Details</a></li>
+    <li><a href="#database">Database (Cloud Firestore) Schema</a></li>
+    <li><a href="#api">Backend API Reference</a></li>
+    <li><a href="#filters">Stock Recommendation Filtering Criteria</a></li>
+    <li><a href="#strategies">Option Strategies — Detailed Summary</a></li>
+    <li><a href="#ai">AI Feedback &amp; Learning Loop</a></li>
+    <li><a href="#flows">End-to-End Request Flows</a></li>
+    <li><a href="#security">Security &amp; Operational Concerns</a></li>
+  </ol>
+</nav>
+
+<!-- =================================================================== -->
+<section id="overview">
+  <h2>1. High-Level Overview</h2>
+  <p>
+    <strong>FinanceStreamAI</strong> is a Kotlin/Jetpack-Compose Android trading-research app
+    backed by a Python <strong>FastAPI</strong> service deployed on <strong>Render</strong>.
+    The backend evaluates stocks across <strong>technical, fundamental, and momentum</strong>
+    signals and surfaces matches for four option strategies: <em>Cash-Secured Puts (CSP),
+    Diagonal Call Spreads, Vertical Bull-Call LEAPS, and Long LEAPS</em>. All persistent state
+    (positions, watchlists, recommendations, learning stats) lives in <strong>Cloud Firestore</strong>.
+    A weekly <strong>APScheduler</strong> job re-evaluates open recommendations and aggregates
+    win-rate statistics by signal and verdict — a self-improving feedback loop. The Android client
+    additionally cross-validates verdicts against up-to-five external LLMs
+    (Claude, Gemini, ChatGPT, Perplexity, Grok) before display.
+  </p>
+
+  <div class="grid-2">
+    <div class="card">
+      <h4>Client Highlights</h4>
+      <ul>
+        <li>Single-activity Jetpack Compose (Material 3)</li>
+        <li>Retrofit 2 + OkHttp 4 (X-User-Id header)</li>
+        <li>WorkManager: Daily scan + hourly portfolio-flip + scan workers</li>
+        <li>Google Sign-In via <code>androidx.credentials</code></li>
+        <li>EncryptedSharedPreferences (AES256-GCM) for AI keys</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h4>Server Highlights</h4>
+      <ul>
+        <li>FastAPI + Uvicorn worker via Gunicorn (1 worker, 600s timeout)</li>
+        <li>Cloud Firestore for all state (no SQL DB at runtime)</li>
+        <li>Market data: yfinance + Tradier (with <code>curl_cffi</code> Chrome impersonation)</li>
+        <li>APScheduler: weekly evaluator (Mon 14:00 UTC) + startup-catchup</li>
+        <li>Async scan jobs (in-memory job table) + sync scan</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<!-- =================================================================== -->
+<section id="diagram">
+  <h2>2. Block Diagram — Component Flow</h2>
+  <div class="diagram">
+    <svg viewBox="0 0 1200 820" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0,0 L10,5 L0,10 z" fill="#38bdf8"/>
+        </marker>
+        <marker id="arrow2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0,0 L10,5 L0,10 z" fill="#a78bfa"/>
+        </marker>
+        <marker id="arrow3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0,0 L10,5 L0,10 z" fill="#22d3ee"/>
+        </marker>
+        <style>
+          .box { fill: #1e293b; stroke: #38bdf8; stroke-width: 1.5; rx: 10; ry: 10; }
+          .box-android { fill: #14532d; stroke: #22c55e; }
+          .box-backend { fill: #1e3a8a; stroke: #60a5fa; }
+          .box-data { fill: #581c87; stroke: #a78bfa; }
+          .box-ext { fill: #7c2d12; stroke: #fb923c; }
+          .box-ai { fill: #831843; stroke: #f472b6; }
+          .lbl { fill: #e2e8f0; font: 12px -apple-system,Segoe UI,sans-serif; }
+          .lbl-bold { fill: #ffffff; font: bold 13px -apple-system,Segoe UI,sans-serif; }
+          .grp { fill: none; stroke: #475569; stroke-dasharray: 4 4; rx: 12; ry: 12; }
+          .grplbl { fill: #94a3b8; font: bold 13px -apple-system; }
+          .flow { stroke: #38bdf8; stroke-width: 1.5; fill: none; marker-end: url(#arrow); }
+          .flow-ai { stroke: #a78bfa; stroke-width: 1.5; fill: none; marker-end: url(#arrow2); }
+          .flow-data { stroke: #22d3ee; stroke-width: 1.5; fill: none; marker-end: url(#arrow3); }
+        </style>
+      </defs>
+
+      <!-- ANDROID GROUP -->
+      <rect class="grp" x="20" y="40" width="320" height="740"/>
+      <text class="grplbl" x="40" y="65">Android Client (Kotlin / Compose)</text>
+
+      <rect class="box box-android" x="40" y="85" width="280" height="60"/>
+      <text class="lbl-bold" x="60" y="110">UI Screens (MainActivity)</text>
+      <text class="lbl" x="60" y="128">Scan · Trending · AI Guru · Portfolio</text>
+
+      <rect class="box box-android" x="40" y="170" width="280" height="55"/>
+      <text class="lbl-bold" x="60" y="193">GoogleAuthManager</text>
+      <text class="lbl" x="60" y="210">Credential Manager → X-User-Id</text>
+
+      <rect class="box box-android" x="40" y="250" width="280" height="60"/>
+      <text class="lbl-bold" x="60" y="273">Retrofit / OkHttp Client</text>
+      <text class="lbl" x="60" y="291">JPFinanceApi · 15s/120s timeouts</text>
+
+      <rect class="box box-android" x="40" y="335" width="280" height="80"/>
+      <text class="lbl-bold" x="60" y="358">WorkManager Workers</text>
+      <text class="lbl" x="60" y="376">DailyRecommendationWorker (24h)</text>
+      <text class="lbl" x="60" y="392">PortfolioFlipWorker (1h, mkt hrs)</text>
+      <text class="lbl" x="60" y="408">ScanWorker</text>
+
+      <rect class="box box-ai" x="40" y="440" width="280" height="80"/>
+      <text class="lbl-bold" x="60" y="463">AiCrossValidator</text>
+      <text class="lbl" x="60" y="481">Claude · Gemini · ChatGPT</text>
+      <text class="lbl" x="60" y="497">Perplexity · Grok (parallel)</text>
+      <text class="lbl" x="60" y="513">15-min cache · consensus verdict</text>
+
+      <rect class="box box-android" x="40" y="545" width="280" height="80"/>
+      <text class="lbl-bold" x="60" y="568">Local Storage</text>
+      <text class="lbl" x="60" y="586">SharedPrefs: portfolio, watchlist</text>
+      <text class="lbl" x="60" y="602">EncryptedSharedPrefs: AI keys</text>
+      <text class="lbl" x="60" y="618">NotificationCache (max 50)</text>
+
+      <rect class="box box-android" x="40" y="650" width="280" height="60"/>
+      <text class="lbl-bold" x="60" y="673">Local Notifications</text>
+      <text class="lbl" x="60" y="691">3 channels (HIGH importance)</text>
+
+      <!-- BACKEND GROUP -->
+      <rect class="grp" x="380" y="40" width="430" height="740"/>
+      <text class="grplbl" x="400" y="65">Render Cloud · FastAPI Backend (1 uvicorn worker)</text>
+
+      <rect class="box box-backend" x="400" y="85" width="390" height="60"/>
+      <text class="lbl-bold" x="420" y="110">FastAPI Router (main.py)</text>
+      <text class="lbl" x="420" y="128">/scan · /scan/async · /scan/trending · /portfolio · /watchlist · /backtest · /recommendations</text>
+
+      <rect class="box box-backend" x="400" y="170" width="390" height="80"/>
+      <text class="lbl-bold" x="420" y="193">JPFinanceEngine</text>
+      <text class="lbl" x="420" y="211">process_ticker() · prefetch_market_data()</text>
+      <text class="lbl" x="420" y="227">Technicals (RSI/MACD/SMA/BB/ATR/VWAP)</text>
+      <text class="lbl" x="420" y="243">Fundamentals · IV Rank · Verdict</text>
+
+      <rect class="box box-backend" x="400" y="275" width="190" height="120"/>
+      <text class="lbl-bold" x="420" y="298">Strategy Builders</text>
+      <text class="lbl" x="420" y="316">_get_csp_logic()</text>
+      <text class="lbl" x="420" y="332">_get_diagonal_logic()</text>
+      <text class="lbl" x="420" y="348">_get_vertical_logic()</text>
+      <text class="lbl" x="420" y="364">_get_long_leaps_logic()</text>
+      <text class="lbl" x="420" y="382">+ get_bt_success() backtest</text>
+
+      <rect class="box box-backend" x="600" y="275" width="190" height="120"/>
+      <text class="lbl-bold" x="620" y="298">Async Scan Jobs</text>
+      <text class="lbl" x="620" y="316">In-memory scan_jobs{}</text>
+      <text class="lbl" x="620" y="332">ThreadPoolExecutor</text>
+      <text class="lbl" x="620" y="348">job_id polling</text>
+      <text class="lbl" x="620" y="364">10-min auto-purge</text>
+      <text class="lbl" x="620" y="382">Bulk yfinance prefetch</text>
+
+      <rect class="box box-ai" x="400" y="420" width="390" height="100"/>
+      <text class="lbl-bold" x="420" y="443">ai_feedback.py</text>
+      <text class="lbl" x="420" y="461">RecommendationTracker — capture matches</text>
+      <text class="lbl" x="420" y="477">WeeklyEvaluator — re-price · classify</text>
+      <text class="lbl" x="420" y="493">SignalLearner — win-rate aggregation</text>
+      <text class="lbl" x="420" y="509">SchedulerManager (APScheduler · Mon 14:00 UTC)</text>
+
+      <rect class="box box-backend" x="400" y="545" width="390" height="65"/>
+      <text class="lbl-bold" x="420" y="568">Startup Hooks</text>
+      <text class="lbl" x="420" y="585">Init Firestore · start scheduler</text>
+      <text class="lbl" x="420" y="601">_check_eval_on_startup() (catch-up)</text>
+
+      <rect class="box box-backend" x="400" y="635" width="390" height="60"/>
+      <text class="lbl-bold" x="420" y="658">Procfile (Gunicorn)</text>
+      <text class="lbl" x="420" y="676">gunicorn -w 1 -k UvicornWorker --timeout 600</text>
+
+      <rect class="box box-backend" x="400" y="715" width="390" height="55"/>
+      <text class="lbl-bold" x="420" y="738">Python 3.10.11 (runtime.txt)</text>
+      <text class="lbl" x="420" y="755">FastAPI · pydantic · pandas · scipy · APScheduler</text>
+
+      <!-- DATA / EXT GROUP -->
+      <rect class="grp" x="850" y="40" width="330" height="740"/>
+      <text class="grplbl" x="870" y="65">Data &amp; External Services</text>
+
+      <rect class="box box-data" x="870" y="85" width="290" height="120"/>
+      <text class="lbl-bold" x="890" y="108">Cloud Firestore</text>
+      <text class="lbl" x="890" y="126">users/{uid}/positions</text>
+      <text class="lbl" x="890" y="142">users/{uid}/settings/watchlist</text>
+      <text class="lbl" x="890" y="158">recommendations · recommendation_evals</text>
+      <text class="lbl" x="890" y="174">signal_stats · verdict_stats</text>
+      <text class="lbl" x="890" y="190">meta/counter · meta/eval_status</text>
+
+      <rect class="box box-ext" x="870" y="225" width="290" height="80"/>
+      <text class="lbl-bold" x="890" y="248">Firebase Admin SDK</text>
+      <text class="lbl" x="890" y="266">Auth (ID-token verify)</text>
+      <text class="lbl" x="890" y="282">Firestore client</text>
+      <text class="lbl" x="890" y="298">Service account JSON</text>
+
+      <rect class="box box-ext" x="870" y="325" width="290" height="100"/>
+      <text class="lbl-bold" x="890" y="348">Market Data</text>
+      <text class="lbl" x="890" y="366">yfinance (primary, 2y history)</text>
+      <text class="lbl" x="890" y="382">Tradier API (option chains)</text>
+      <text class="lbl" x="890" y="398">curl_cffi (Chrome TLS impersonate)</text>
+      <text class="lbl" x="890" y="414">Yahoo trending screener</text>
+
+      <rect class="box box-ext" x="870" y="445" width="290" height="100"/>
+      <text class="lbl-bold" x="890" y="468">Google Identity</text>
+      <text class="lbl" x="890" y="486">Credential Manager (Android)</text>
+      <text class="lbl" x="890" y="502">GoogleIdTokenCredential</text>
+      <text class="lbl" x="890" y="518">WEB_CLIENT_ID required</text>
+      <text class="lbl" x="890" y="534">No FCM (local notif only)</text>
+
+      <rect class="box box-ai" x="870" y="565" width="290" height="120"/>
+      <text class="lbl-bold" x="890" y="588">External LLMs (client-side)</text>
+      <text class="lbl" x="890" y="606">Claude — claude-sonnet-4-20250514</text>
+      <text class="lbl" x="890" y="622">Gemini · ChatGPT</text>
+      <text class="lbl" x="890" y="638">Perplexity · Grok (xAI)</text>
+      <text class="lbl" x="890" y="654">User-supplied API keys</text>
+      <text class="lbl" x="890" y="670">Parallel calls · consensus build</text>
+
+      <rect class="box box-data" x="870" y="705" width="290" height="65"/>
+      <text class="lbl-bold" x="890" y="728">APScheduler Jobs</text>
+      <text class="lbl" x="890" y="746">Cron: Mon 14:00 UTC</text>
+      <text class="lbl" x="890" y="762">+ startup catch-up if &gt;6 days</text>
+
+      <!-- FLOWS -->
+      <!-- Android UI -> Retrofit -->
+      <path class="flow" d="M180 145 L180 250"/>
+      <!-- Retrofit -> Backend Router -->
+      <path class="flow" d="M320 280 L400 115"/>
+      <!-- Workers -> Retrofit -->
+      <path class="flow" d="M180 335 L180 310"/>
+      <!-- Backend Router -> Engine -->
+      <path class="flow" d="M595 145 L595 170"/>
+      <!-- Engine -> Strategy / Async -->
+      <path class="flow" d="M495 250 L495 275"/>
+      <path class="flow" d="M695 250 L695 275"/>
+      <!-- Engine -> Market Data -->
+      <path class="flow-data" d="M790 210 L870 365"/>
+      <!-- Backend Router -> Firestore -->
+      <path class="flow-data" d="M790 115 L870 145"/>
+      <!-- ai_feedback -> Firestore -->
+      <path class="flow-data" d="M790 470 L870 175"/>
+      <!-- APScheduler -> ai_feedback -->
+      <path class="flow-ai" d="M1010 705 L795 470"/>
+      <!-- AiCrossValidator -> External LLMs -->
+      <path class="flow-ai" d="M320 480 L870 615"/>
+      <!-- Auth: GoogleAuth -> Google Identity -->
+      <path class="flow" d="M320 195 L870 485"/>
+      <!-- Notifications loop back to UI -->
+      <path class="flow" d="M180 650 L180 145"/>
+      <!-- Engine -> ai_feedback (background_task capture) -->
+      <path class="flow-ai" d="M595 250 L595 420"/>
+    </svg>
+  </div>
+  <p style="margin-top:10px;">
+    <span class="badge tag">Blue arrows</span> sync request flow ·
+    <span class="badge tag">Cyan arrows</span> data persistence/fetch ·
+    <span class="badge tag">Purple arrows</span> AI / async background flow.
+  </p>
+</section>
+
+<!-- =================================================================== -->
+<section id="android">
+  <h2>3. Android App Architecture</h2>
+
+  <h3>3.1 Tech Stack</h3>
+  <table>
+    <tr><th>Area</th><th>Choice</th></tr>
+    <tr><td>Language</td><td>Kotlin 2.2.10</td></tr>
+    <tr><td>Build</td><td>AGP 9.1.0 · Java 11 toolchain</td></tr>
+    <tr><td>SDK</td><td>min 24 · target 35 · compile 35</td></tr>
+    <tr><td>UI</td><td>Jetpack Compose BOM 2024.09.00 · Material 3 · Compose Icons Extended</td></tr>
+    <tr><td>HTTP</td><td>Retrofit 2.9.0 · OkHttp 4.11.0 · Gson</td></tr>
+    <tr><td>Background</td><td>WorkManager 2.9.0</td></tr>
+    <tr><td>Auth</td><td>androidx.credentials 1.3.0 + googleid 1.1.1</td></tr>
+    <tr><td>Storage</td><td>SharedPreferences + EncryptedSharedPreferences (security-crypto 1.1.0-alpha06)</td></tr>
+    <tr><td>Images</td><td>Coil 2.4.0</td></tr>
+  </table>
+
+  <h3>3.2 Module Layout</h3>
+  <pre><code>com.example.financestreamai/
+├── MainActivity.kt              // Single activity; Compose host; Retrofit init; tab nav
+├── NewScreens.kt                // SectorRotationScreen, AiLearningsScreen
+├── Constants.kt                 // BASE_URL = https://financestreamai-backend.onrender.com/api/v1/
+├── GoogleAuthManager.kt         // Credential Manager + UserSession
+├── AiCrossValidator.kt          // Multi-LLM consensus + EncryptedSharedPreferences key store
+├── DailyRecommendationWorker.kt // 24h scan + push notification
+├── PortfolioFlipWorker.kt       // 1h flip detection during market hours
+├── ScanWorker.kt                // Generic CSP scan worker
+└── ui/theme/                    // Color.kt · Theme.kt · Type.kt</code></pre>
+
+  <h3>3.3 Background Workers</h3>
+  <table>
+    <tr><th>Worker</th><th>Cadence</th><th>Behaviour</th><th>Channel</th></tr>
+    <tr>
+      <td><code>DailyRecommendationWorker</code></td>
+      <td>Every 24h, after 9:30 ET market open</td>
+      <td>Skips weekends/9 US holidays · scans watchlist in batches of 3 · filters by RSI/IV-Rank/BT/ROC · top-5 per strategy · push notification</td>
+      <td><code>daily_recommendations</code></td>
+    </tr>
+    <tr>
+      <td><code>PortfolioFlipWorker</code></td>
+      <td>Hourly, 9:30–16:00 ET only</td>
+      <td>Scans active positions in batches of 5 · diffs against last saved verdict in <code>PortfolioFlipPrefs</code> · alerts on flip</td>
+      <td><code>portfolio_flip_alerts</code></td>
+    </tr>
+    <tr>
+      <td><code>ScanWorker</code></td>
+      <td>Configurable</td>
+      <td>Generic CSP scan + alert</td>
+      <td><code>alpha_stream_alerts</code></td>
+    </tr>
+  </table>
+
+  <h3>3.4 AI Cross-Validator</h3>
+  <p>
+    <code>AiCrossValidator.kt</code> issues parallel requests (via <code>coroutineScope { async }</code>)
+    to up to five LLMs whose API keys the user supplies. Each engine receives a structured prompt
+    containing the ticker, price, current verdict, bullish/bearish signals, support/resistance levels,
+    sector, and chosen strategies; each returns a <code>verdict</code> (BUY/SELL/HOLD/AVOID),
+    <code>confidence</code>, and <code>reasoning</code>. The validator aggregates votes into a consensus
+    (STRONG BUY / BUY / HOLD / AVOID / MIXED) and an agreement percentage. Results are cached in-memory
+    for <strong>15 minutes</strong> per ticker. API keys are stored in EncryptedSharedPreferences
+    using <strong>AES256-GCM</strong> for both keys and values.
+  </p>
+
+  <h3>3.5 Authentication Flow</h3>
+  <ol>
+    <li>User taps <em>Sign In with Google</em> on <code>GoogleSignInScreen</code>.</li>
+    <li><code>CredentialManager.getCredential()</code> launches the Google credential picker.</li>
+    <li>Returned <code>GoogleIdTokenCredential</code> is parsed by <code>GoogleAuthManager.handleSignInResult()</code>.</li>
+    <li>User identity (id, name, email, photo) saved in <code>GoogleAuthPrefs</code>; <code>UserSession.userId</code> populated.</li>
+    <li>An OkHttp <em>Interceptor</em> attaches <code>X-User-Id: &lt;uid&gt;</code> to every backend request.</li>
+  </ol>
+</section>
+
+<!-- =================================================================== -->
+<section id="backend">
+  <h2>4. Backend Architecture (FastAPI on Render)</h2>
+
+  <h3>4.1 Tech Stack</h3>
+  <ul>
+    <li><strong>FastAPI</strong> served by <strong>Uvicorn</strong> via <strong>Gunicorn</strong> (1 worker)</li>
+    <li><strong>Python 3.10.11</strong> (<code>runtime.txt</code>)</li>
+    <li><strong>Cloud Firestore</strong> via <code>firebase-admin</code> (service-account JSON)</li>
+    <li><strong>yfinance</strong> + <strong>Tradier REST</strong> + <strong>curl_cffi</strong> (Chrome TLS impersonation to bypass Yahoo DC IP blocks)</li>
+    <li><strong>APScheduler</strong> (CronTrigger Mon 14:00 UTC) — weekly evaluator</li>
+    <li><strong>numpy / pandas / scipy.stats</strong> — technicals, Black-Scholes, win-rate stats</li>
+    <li><strong>concurrent.futures.ThreadPoolExecutor</strong> — parallel data fetches (5–8 workers)</li>
+    <li><strong>pydantic</strong> — request/response models</li>
+  </ul>
+
+  <h3>4.2 File Layout</h3>
+  <pre><code>FinanceStreamAI_Backend/
+├── main.py                                       // 2,517 lines — all routes, JPFinanceEngine, strategies
+├── ai_feedback.py                                // Tracker · WeeklyEvaluator · SignalLearner · Scheduler
+├── financestreamai-firebase-adminsdk-*.json      // Firebase service account
+├── Procfile                                      // gunicorn launch line
+├── runtime.txt                                   // python-3.10.11
+├── requirements.txt
+├── test_*.py / verify_*.py                       // Local validation scripts
+└── API_Reference.html                            // Pre-existing API docs</code></pre>
+
+  <h3>4.3 JPFinanceEngine</h3>
+  <p>The <code>JPFinanceEngine</code> class is the analytical core. Key methods:</p>
+  <ul>
+    <li><code>prefetch_market_data(tickers)</code> — bulk yfinance download (2y daily OHLCV) in parallel; warm fundamentals cache.</li>
+    <li><code>process_ticker(ticker)</code> — orchestrates: technicals → fundamentals → IV rank → signals → verdict → strategy builders.</li>
+    <li><code>_get_csp_logic / _get_diagonal_logic / _get_vertical_logic / _get_long_leaps_logic</code> — strategy match producers.</li>
+    <li><code>get_bt_success(history, strike_ratio, dte)</code> — historical win-rate backtest.</li>
+    <li><code>_build_fundamental_signals()</code>, <code>_build_technical_signals()</code> — signal lists feeding the verdict.</li>
+  </ul>
+  <p>After each scan job, <code>_history_cache.clear()</code> and <code>_fundamentals_cache.clear()</code> run to keep the long-lived dyno’s memory bounded.</p>
+</section>
+
+<!-- =================================================================== -->
+<section id="deployment">
+  <h2>5. Render Deployment</h2>
+  <h3>5.1 Procfile</h3>
+  <pre><code>web: gunicorn -w 1 -k uvicorn.workers.UvicornWorker --bind 0.0.0.0:$PORT --timeout 600 main:app</code></pre>
+  <ul>
+    <li><code>-w 1</code> — single worker; in-memory <code>scan_jobs</code> table is process-local.</li>
+    <li><code>UvicornWorker</code> — async ASGI worker for FastAPI.</li>
+    <li><code>--timeout 600</code> — 10-minute timeout for long sync scans.</li>
+  </ul>
+
+  <h3>5.2 Environment Variables</h3>
+  <table>
+    <tr><th>Variable</th><th>Required?</th><th>Use</th></tr>
+    <tr><td><code>TRADIER_API_KEY</code></td><td>Optional</td><td>Primary options chains; if absent, yfinance fallback</td></tr>
+    <tr><td><code>GOOGLE_APPLICATION_CREDENTIALS</code></td><td>Required (or bundled JSON)</td><td>Firestore + Firebase Auth credentials</td></tr>
+    <tr><td><code>PORT</code></td><td>Auto</td><td>Injected by Render</td></tr>
+  </table>
+
+  <h3>5.3 Startup Sequence</h3>
+  <ol>
+    <li>Render boots dyno → Gunicorn launches 1 Uvicorn worker.</li>
+    <li>FastAPI <code>@app.on_event("startup")</code> initialises Firestore client.</li>
+    <li><code>SchedulerManager</code> registers the weekly cron job.</li>
+    <li><code>_check_eval_on_startup()</code> runs in a background thread; if <code>meta/eval_status.last_eval_at</code> is &gt; 6 days old, the evaluator runs immediately. This makes the weekly job resilient to Render’s ~24h dyno restarts.</li>
+  </ol>
+</section>
+
+<!-- =================================================================== -->
+<section id="database">
+  <h2>6. Database — Cloud Firestore Schema</h2>
+  <p>All persistent state lives in Firestore. The local <code>finance_stream.db</code> SQLite file is only a leftover from earlier development and is not used at runtime.</p>
+
+  <h3>6.1 Collections</h3>
+  <table>
+    <tr><th>Path</th><th>Purpose</th><th>Key Fields</th></tr>
+    <tr>
+      <td><code>users/{uid}/positions</code></td>
+      <td>Per-user trade positions</td>
+      <td>id, ticker, strike, expiry, trigger_price, entry_premium, contracts, strategy, is_call, is_buy, status, realized_pnl, close_date</td>
+    </tr>
+    <tr>
+      <td><code>users/{uid}/settings/watchlist</code></td>
+      <td>User watchlist</td>
+      <td>tickers[], updated_at</td>
+    </tr>
+    <tr>
+      <td><code>recommendations</code></td>
+      <td>All scan matches and backtest verdicts</td>
+      <td>rec_id, source (scan_daily|backtest), ticker, strategy, action, entry_price, strike, verdict, signals[], warnings[], match_detail, expires_at, eval_count, closed, outcome_history[]</td>
+    </tr>
+    <tr>
+      <td><code>recommendation_evals</code></td>
+      <td>Weekly outcome snapshots</td>
+      <td>rec_id, ticker, eval_at, week, current_price, entry_price, price_change_pct, status (winning/losing/neutral)</td>
+    </tr>
+    <tr>
+      <td><code>signal_stats</code></td>
+      <td>Aggregated win-rate per (strategy, normalized signal)</td>
+      <td>strategy, signal, norm, side, winning, losing, neutral, total, win_rate, updated_at</td>
+    </tr>
+    <tr>
+      <td><code>verdict_stats</code></td>
+      <td>Aggregated win-rate per (strategy, verdict)</td>
+      <td>strategy, verdict, winning, losing, neutral, total, win_rate, updated_at</td>
+    </tr>
+    <tr>
+      <td><code>meta/counter</code></td>
+      <td>Auto-increment id source</td>
+      <td>next_id</td>
+    </tr>
+    <tr>
+      <td><code>meta/eval_status</code></td>
+      <td>Last weekly-evaluator run</td>
+      <td>last_eval_at, last_result, trigger</td>
+    </tr>
+  </table>
+</section>
+
+<!-- =================================================================== -->
+<section id="api">
+  <h2>7. Backend API Reference</h2>
+  <p>Base URL: <code>https://financestreamai-backend.onrender.com/api/v1/</code>. All authenticated endpoints expect the header <code>X-User-Id: &lt;google_uid&gt;</code>.</p>
+
+  <h3>7.1 Health &amp; Diagnostics</h3>
+  <table>
+    <tr><th>Method</th><th>Path</th><th>Description</th></tr>
+    <tr><td><span class="badge get">GET</span></td><td><code>/</code></td><td>Root health check — returns <code>{status, version}</code>.</td></tr>
+    <tr><td><span class="badge get">GET</span></td><td><code>/api/v1/debug</code></td><td>Diagnoses Yahoo Finance connectivity / curl_cffi availability.</td></tr>
+    <tr><td><span class="badge get">GET</span></td><td><code>/api/v1/health</code></td><td>Returns capital health, monthly realized P&amp;L, monthly goal progress, active position count.</td></tr>
+  </table>
+
+  <h3>7.2 Scanning &amp; Recommendations</h3>
+  <table>
+    <tr><th>Method</th><th>Path</th><th>Query Params</th><th>Description</th></tr>
+    <tr><td><span class="badge get">GET</span></td><td><code>/api/v1/scan</code></td>
+        <td><code>tickers</code>, <code>include_trending</code>, <code>strong_only</code></td>
+        <td>Synchronous scan of watchlist or supplied tickers. Returns flat list of per-ticker results with all four strategies inlined.</td></tr>
+    <tr><td><span class="badge get">GET</span></td><td><code>/api/v1/scan/async</code></td>
+        <td>same as <code>/scan</code></td>
+        <td>Begins background scan; returns <code>{job_id, total_tickers, poll_url}</code>.</td></tr>
+    <tr><td><span class="badge get">GET</span></td><td><code>/api/v1/scan/status/{job_id}</code></td>
+        <td>—</td>
+        <td>Poll job; returns either <code>{status, progress, tickers_scanned}</code> or final results.</td></tr>
+    <tr><td><span class="badge get">GET</span></td><td><code>/api/v1/scan/trending</code></td>
+        <td><code>limit</code> (1–25, default 10), <code>strong_only</code></td>
+        <td>Sync scan of Yahoo most-active / trending tickers.</td></tr>
+    <tr><td><span class="badge get">GET</span></td><td><code>/api/v1/scan/trending/async</code></td>
+        <td><code>limit</code>, <code>strong_only</code></td>
+        <td>Async equivalent of trending scan.</td></tr>
+  </table>
+
+  <h3>7.3 Watchlist</h3>
+  <table>
+    <tr><th>Method</th><th>Path</th><th>Description</th></tr>
+    <tr><td><span class="badge get">GET</span></td><td><code>/api/v1/watchlist</code></td><td>Get user watchlist.</td></tr>
+    <tr><td><span class="badge put">PUT</span></td><td><code>/api/v1/watchlist</code></td><td>Replace entire watchlist.</td></tr>
+    <tr><td><span class="badge post">POST</span></td><td><code>/api/v1/watchlist/add</code></td><td>Add a ticker.</td></tr>
+    <tr><td><span class="badge delete">DELETE</span></td><td><code>/api/v1/watchlist/remove</code></td><td>Remove a ticker.</td></tr>
+  </table>
+
+  <h3>7.4 Portfolio</h3>
+  <table>
+    <tr><th>Method</th><th>Path</th><th>Description</th></tr>
+    <tr><td><span class="badge get">GET</span></td><td><code>/api/v1/portfolio/positions</code></td><td>List positions.</td></tr>
+    <tr><td><span class="badge post">POST</span></td><td><code>/api/v1/portfolio/add</code></td><td>Add new position (ticker, strike, expiry, premium, strategy, contracts).</td></tr>
+    <tr><td><span class="badge put">PUT</span></td><td><code>/api/v1/portfolio/update/{id}</code></td><td>Update existing position.</td></tr>
+    <tr><td><span class="badge post">POST</span></td><td><code>/api/v1/portfolio/close/{id}</code></td><td>Close position; records realized P&amp;L.</td></tr>
+    <tr><td><span class="badge delete">DELETE</span></td><td><code>/api/v1/portfolio/remove/{id}</code></td><td>Hard-delete a position.</td></tr>
+  </table>
+
+  <h3>7.5 Backtest</h3>
+  <table>
+    <tr><th>Method</th><th>Path</th><th>Description</th></tr>
+    <tr><td><span class="badge post">POST</span></td><td><code>/api/v1/backtest</code></td>
+        <td>Body: <code>{ticker, strategy, action, strike, premium, expiry}</code>. Returns verdict, confidence, summary, backtest_score, signals, warnings, levels — and is captured into the AI feedback loop as <code>source=backtest</code>.</td></tr>
+  </table>
+
+  <h3>7.6 Recommendations &amp; Learning</h3>
+  <table>
+    <tr><th>Method</th><th>Path</th><th>Description</th></tr>
+    <tr><td><span class="badge get">GET</span></td><td><code>/api/v1/recommendations/history</code></td><td>Filterable by <code>days</code>, <code>ticker</code>, <code>strategy</code>, <code>closed</code>.</td></tr>
+    <tr><td><span class="badge get">GET</span></td><td><code>/api/v1/recommendations/stats</code></td><td>Aggregate win/loss by strategy/verdict.</td></tr>
+    <tr><td><span class="badge get">GET</span></td><td><code>/api/v1/recommendations/{rec_id}</code></td><td>Single recommendation detail.</td></tr>
+    <tr><td><span class="badge get">GET</span></td><td><code>/api/v1/recommendations/learnings</code></td><td>Top winning/losing signals, verdict baselines, suggested adjustments.</td></tr>
+    <tr><td><span class="badge post">POST</span></td><td><code>/api/v1/recommendations/learnings/refresh</code></td><td>Force re-aggregation of <code>signal_stats</code>/<code>verdict_stats</code>.</td></tr>
+  </table>
+
+  <h3>7.7 Other</h3>
+  <table>
+    <tr><th>Method</th><th>Path</th><th>Description</th></tr>
+    <tr><td><span class="badge get">GET</span></td><td><code>/api/v1/sector-rotation</code></td><td>Sector rotation snapshot. Query <code>period</code> ∈ {1mo, 3mo, 6mo}. Returns top/bottom sectors, money flow, acceleration, ranking.</td></tr>
+    <tr><td><span class="badge post">POST</span></td><td><code>/api/v1/settings/update</code></td><td>Update user settings.</td></tr>
+  </table>
+
+  <h3>7.8 Per-Ticker Scan Response Shape</h3>
+  <pre><code>{
+  "ticker": "NVDA",
+  "price": 875.50,
+  "beta": 1.45,
+  "iv_rank": "65.2%",
+  "rsi": 58.3,
+  "overall": "STRONG BUY",
+  "stock_summary": "RSI 58.3, uptrend. 6 bullish vs 1 bearish.",
+  "bullish_signals": ["Above 200-day SMA", "RSI below midline", ...],
+  "bearish_signals": [],
+  "csps":        [{strike, expiry, premium, delta, bt, roc, stop_loss, target, risk_note}],
+  "diagonals":   [{long, short, net_debit, yield, bt, stop_loss, target, ...}],
+  "verticals":   [{strikes, expiry, net_debit, bt, stop_loss, target, ...}],
+  "long_leaps":  [{strike, expiry, premium, delta, leverage, profile, ...}],
+  "levels":      {stop_loss, target, risk_reward_ratio},
+  "daily_change_pct": 1.23,
+  "company_name": "NVIDIA Corporation",
+  "sector": "Technology",
+  "next_earnings_date": "2026-05-20",
+  "analyst_target": {mean, low, high, num_analysts, upside_pct}
+}</code></pre>
+</section>
+
+<!-- =================================================================== -->
+<section id="filters">
+  <h2>8. Stock Recommendation Filtering Criteria</h2>
+
+  <h3>8.1 Technical Signals</h3>
+  <table>
+    <tr><th>Signal</th><th class="pill-good">Bullish</th><th class="pill-bad">Bearish</th></tr>
+    <tr><td>RSI(14, Wilder EMA)</td><td>&lt; 35 oversold; &lt; 50 below midline</td><td>&gt; 70 overbought</td></tr>
+    <tr><td>60-day backtest win-rate</td><td>≥ 65% acceptable; ≥ 80% strict</td><td>&lt; 65%</td></tr>
+    <tr><td>90-day backtest win-rate</td><td>≥ 65%</td><td>&lt; 65%</td></tr>
+    <tr><td>Discount from 52-week high</td><td>≥ 8% attractive; ≥ 15% deep</td><td>&lt; 3% off high</td></tr>
+    <tr><td>Price vs SMA200</td><td>Above (uptrend)</td><td>Below (downtrend)</td></tr>
+    <tr><td>Price vs SMA50</td><td>Above</td><td>Below</td></tr>
+    <tr><td>Volume surge vs 20d avg</td><td>≥ 1.5× strong; ≥ 1.25× rising</td><td>&lt; 0.7× fading</td></tr>
+    <tr><td>Price vs 20d VWAP</td><td>≥ +2%</td><td>≤ -2%</td></tr>
+    <tr><td>5-day momentum</td><td>≥ +5%</td><td>≤ -5%</td></tr>
+    <tr><td>20-day momentum</td><td>≥ +8%</td><td>≤ -8%</td></tr>
+    <tr><td>MACD</td><td>Bullish crossover, above signal</td><td>Bearish crossover, below signal</td></tr>
+    <tr><td>Volume/Price divergence</td><td>Both confirm</td><td>Price up on declining volume</td></tr>
+    <tr><td>Bollinger Bands (1.5σ)</td><td>Near lower band</td><td>Near upper band</td></tr>
+    <tr><td>Breakout</td><td>Above 20d high + volume surge</td><td>—</td></tr>
+  </table>
+
+  <h3>8.2 Fundamental Signals (<code>_build_fundamental_signals</code>)</h3>
+  <table>
+    <tr><th>Metric</th><th class="pill-good">Bullish</th><th class="pill-bad">Bearish</th></tr>
+    <tr><td>Forward / Trailing PE</td><td>Forward &lt; Trailing × 0.85 (EPS growing)</td><td>Forward &gt; Trailing × 1.15</td></tr>
+    <tr><td>Forward PE level</td><td>&lt; 20 reasonable</td><td>&gt; 60 rich</td></tr>
+    <tr><td>PEG</td><td>&lt; 1.0 undervalued; &lt; 1.5 fair</td><td>&gt; 3.0 expensive</td></tr>
+    <tr><td>Revenue growth (QoQ YoY)</td><td>≥ 25% strong; ≥ 10% good</td><td>&lt; 0% declining</td></tr>
+    <tr><td>Earnings growth (QoQ YoY)</td><td>≥ 30% strong; ≥ 15% good</td><td>&lt; -10% declining</td></tr>
+    <tr><td>Fundamental momentum</td><td>Rev ≥ 15% AND EPS ≥ 20%</td><td>—</td></tr>
+    <tr><td>Gross margin</td><td>≥ 60% premium; ≥ 40%</td><td>&lt; 20% commoditized</td></tr>
+    <tr><td>Operating margin</td><td>≥ 25% efficient</td><td>&lt; 0% unprofitable</td></tr>
+    <tr><td>Margin expansion</td><td>OM ≥ 15% AND Rev ≥ 10%</td><td>—</td></tr>
+    <tr><td>Analyst consensus</td><td>buy / strong_buy</td><td>sell / strong_sell</td></tr>
+    <tr><td>Analyst target upside</td><td>≥ +20% strong; ≥ +10%</td><td>≤ -10% downside</td></tr>
+    <tr><td>Debt / Equity</td><td>&lt; 30% low leverage</td><td>&gt; 200% over-leveraged</td></tr>
+  </table>
+
+  <h3>8.3 Verdict Composition</h3>
+  <pre><code>if (bullish &gt;= bearish + 5
+    AND _has_quality_kicker
+    AND _has_trend_confirm):
+    verdict = "STRONG BUY"
+elif bullish &gt; bearish:
+    verdict = "BUY"
+elif bullish == bearish:
+    verdict = "HOLD"
+else:
+    verdict = "AVOID"
+
+# Quality kicker — any of:
+#   confirmed_breakout · breakout_pending
+#   revenue_growth ≥ 25% AND is_strong
+#   earnings_growth ≥ 30% AND is_strong
+#   analyst_consensus in (buy, strong_buy)
+#   fundamental_momentum_signal
+
+# Trend confirmation — any of:
+#   MACD bullish · vol/price confirmation</code></pre>
+
+  <h3>8.4 Early-Reject Gate</h3>
+  <p>A ticker must satisfy <em>at least one</em> of the following or it is short-circuited (no strategy evaluation runs):</p>
+  <ul>
+    <li>discount ≥ 8%, OR</li>
+    <li>RSI &lt; 48 OR price ≤ lower Bollinger band, OR</li>
+    <li>price &gt; SMA200, OR</li>
+    <li>confirmed/pending breakout, OR</li>
+    <li>ticker is in the curated <code>large_cap_tickers</code> list.</li>
+  </ul>
+</section>
+
+<!-- =================================================================== -->
+<section id="strategies">
+  <h2>9. Option Strategies — Detailed Summary</h2>
+
+  <h3>9.1 Cash-Secured Put (CSP) — <code>_get_csp_logic</code></h3>
+  <p><strong>Purpose:</strong> Sell downside protection and collect premium; willing to take assignment at strike.</p>
+  <ul>
+    <li><strong>Strike:</strong> 70–98% of current price</li>
+    <li><strong>Expiry:</strong> ~60 DTE target (earliest available)</li>
+    <li><strong>Delta:</strong> ≈ -0.25 (delta-neutral to slightly bearish)</li>
+    <li><strong>Backtest (strike/price, 60 DTE):</strong> ≥ 80–85%</li>
+    <li><strong>Monthly ROC:</strong> ≥ 2.0% strict; ≥ 4.0% large-caps; ≥ 5.0% crypto-related</li>
+    <li><strong>Hurdle gate</strong> (must satisfy ≥ 2):
+      <ul>
+        <li>discount ≥ 8%</li>
+        <li>RSI &lt; 48 OR price ≤ lower Bollinger</li>
+        <li>price &gt; SMA200</li>
+        <li>confirmed/pending breakout with volume surge ≥ 1.2×</li>
+      </ul>
+    </li>
+    <li><strong>Liquidity:</strong> reasonable bid/ask spread</li>
+    <li><strong>Exits:</strong> assignment at strike (acceptable); stop-loss at <code>strike − 1×ATR</code>; roll if breached or DTE &lt; 60 and profitable</li>
+  </ul>
+
+  <h3>9.2 Diagonal Call Spread / PMCC — <code>_get_diagonal_logic</code></h3>
+  <p><strong>Purpose:</strong> Synthetic covered call — collect premium on the short call while owning a cheap deep-ITM long call.</p>
+  <ul>
+    <li><strong>Long leg:</strong> ≥ 240 DTE · strike &lt; 95% of price · delta 0.62–0.85 · sufficient intrinsic value</li>
+    <li><strong>Short leg:</strong> 40–75 DTE · strike &gt; current price · long_premium / short_premium ≥ 17%</li>
+    <li><strong>Net debit</strong> = long cost − short credit; max profit ≈ intrinsic spread</li>
+    <li><strong>Hurdles:</strong> if BT ≥ 85% need ≥ 1; if BT ≥ 70% need ≥ 2 of:
+      <ul>
+        <li>discount ≥ 5%</li>
+        <li>RSI 30–72 (neutral/rising)</li>
+        <li>price &gt; SMA20</li>
+        <li>breakout pending/confirmed OR momentum trending</li>
+      </ul>
+    </li>
+    <li><strong>Exits:</strong> short strike breached → close/roll short leg; support broken → exit both; roll short at 21 DTE</li>
+  </ul>
+
+  <h3>9.3 Vertical Bull-Call LEAPS — <code>_get_vertical_logic</code></h3>
+  <p><strong>Purpose:</strong> Defined-risk directional bet on large caps.</p>
+  <ul>
+    <li><strong>Universe restriction:</strong> only tickers in the curated <code>large_cap_tickers</code> list (e.g., NVDA, MSFT, META, AMZN, TSM …)</li>
+    <li><strong>Expiries:</strong> 2027–2028 LEAPS only</li>
+    <li><strong>Long leg:</strong> strike &lt; 98% of price · delta 0.55–0.75</li>
+    <li><strong>Short leg:</strong> strike &gt; 102% of price · delta 0.18–0.35; <code>(long_strike + net_debit) ≤ price × 1.15</code></li>
+    <li><strong>Backtest (breakeven = long_strike + net_debit):</strong> ≥ 80%</li>
+    <li><strong>Profit:</strong> <code>strike_width − net_debit</code>; <strong>Loss:</strong> capped at <code>net_debit × 100</code> per contract</li>
+    <li><strong>Exits:</strong> stock reaches short strike (max profit); support broken (stop-loss); roll at 30–45 DTE</li>
+  </ul>
+
+  <h3>9.4 Long LEAPS — <code>_get_long_leaps_logic</code> (Jason L. Capital cheat-sheet)</h3>
+  <p><strong>Purpose:</strong> Cheap leveraged long-only directional exposure (synthetic stock replacement).</p>
+  <h4>Setup must satisfy ONE of:</h4>
+  <ol>
+    <li><strong>Classic deep discount:</strong> discount ≥ 10% AND price &gt; SMA200</li>
+    <li><strong>Confirmed breakout:</strong> breakout_confirmed OR (breakout_pending AND volume_surge ≥ 1.2×) AND price &gt; SMA200</li>
+    <li><strong>Strong trend:</strong> price &gt; SMA200 AND price &gt; SMA50 AND momentum_20d ≥ 5%</li>
+  </ol>
+  <h4>Strike selection</h4>
+  <ul>
+    <li><strong>Option A — ITM Deep:</strong> strike &lt; price; intrinsic buffer ≥ 60% of premium; delta 0.75–0.85</li>
+    <li><strong>Option B — ~10% OTM:</strong> strike 0–12% above price; delta 0.45–0.60 (cheaper, still directional)</li>
+  </ul>
+  <h4>Other gates</h4>
+  <ul>
+    <li><strong>Expiry:</strong> 600+ DTE preferred (360+ minimum; &lt; 180 DTE rejected)</li>
+    <li><strong>Multi-timeframe RSI:</strong> daily &lt; 40 + weekly curling up = premium entry; weekly ≥ 75 = overbought warning</li>
+    <li><strong>IV Rank:</strong> &lt; 45% (avoid paying for vol crush)</li>
+    <li><strong>Backtest (378 DTE):</strong> Classic ≥ 75%, Breakout ≥ 62%, Trend ≥ 68%</li>
+    <li><strong>Fundamental quality:</strong> at least one of — analyst buy, revenue growth &gt; 20%, earnings growth &gt; 25%, gross margin &gt; 60%, operating margin &gt; 25%</li>
+  </ul>
+  <h4>Exits</h4>
+  <ul>
+    <li>First target = resistance level (52w high or technical resistance)</li>
+    <li>Stop-loss = support level OR <code>price − 2×ATR</code></li>
+    <li>Roll if expiry &lt; 60 DTE and profitable</li>
+    <li>Close if support breaks or thesis invalidated</li>
+  </ul>
+</section>
+
+<!-- =================================================================== -->
+<section id="ai">
+  <h2>10. AI Feedback &amp; Learning Loop (<code>ai_feedback.py</code>)</h2>
+
+  <h3>10.1 RecommendationTracker</h3>
+  <ul>
+    <li><code>capture_scan_results(results)</code> — de-dups by <em>(ticker, strategy, strike, date)</em> and writes only actionable matches (CSP/Diagonal/Vertical/LEAPS) — pure stock-level "overall" verdicts are skipped to keep the dataset clean.</li>
+    <li><code>capture_backtest(request, response)</code> — persists each backtest verdict with <code>source=backtest</code>.</li>
+    <li><code>list_recommendations(days, ticker, strategy, closed)</code> / <code>stats(days)</code> — query helpers.</li>
+  </ul>
+
+  <h3>10.2 WeeklyEvaluator</h3>
+  <p>Idempotent runner; skips recs evaluated in the last 6 days. For each open rec:</p>
+  <ol>
+    <li>Fetch current price (yfinance 5d window).</li>
+    <li><code>_classify_outcome(action, entry, current, strike, strategy)</code>:
+      <ul>
+        <li>CSP → winning if <code>current &gt; strike</code>.</li>
+        <li>Sell call → winning if <code>current &lt; strike</code>.</li>
+        <li>Buy strategies → winning if <code>current ≥ entry × 1.02</code>; losing if <code>≤ entry × 0.98</code>.</li>
+      </ul>
+    </li>
+    <li>Append to <code>outcome_history</code>; increment <code>eval_count</code> (max 4).</li>
+    <li>After 4 weekly evals (~28 days) → mark <code>closed: true</code> with <code>final_status</code>.</li>
+  </ol>
+
+  <h3>10.3 SignalLearner</h3>
+  <p>Aggregates win/loss/neutral counters from closed recs (180-day window) into <code>signal_stats</code> and <code>verdict_stats</code> Firestore collections. Signals are normalized first (e.g. <code>"RSI 32 — oversold" → "rsi N — oversold"</code>) so similar phrasing collapses into a single bucket. A 15-minute in-memory cache fronts the lookup.</p>
+  <p><strong>Phase 2 (verdict adjustment, currently passive):</strong></p>
+  <ul>
+    <li>If <code>(strategy, verdict)</code> win-rate &lt; 30% with n ≥ 10 → downgrade verdict one tier.</li>
+    <li>If win-rate &gt; 70% with n ≥ 20 → upgrade verdict one tier.</li>
+  </ul>
+
+  <h3>10.4 SchedulerManager</h3>
+  <ul>
+    <li><strong>Cron:</strong> Mondays 14:00 UTC (post-market 9 AM ET).</li>
+    <li><strong>Startup catch-up:</strong> on every cold start, if <code>meta/eval_status.last_eval_at</code> is older than 6 days, the evaluator runs immediately on a background thread.</li>
+    <li>No-ops cleanly if APScheduler isn’t installed (defensive).</li>
+  </ul>
+</section>
+
+<!-- =================================================================== -->
+<section id="flows">
+  <h2>11. End-to-End Request Flows</h2>
+
+  <h3>11.1 Watchlist Scan</h3>
+  <ol>
+    <li>User taps <em>Scan</em> in the Compose UI → Retrofit issues <code>GET /api/v1/scan?strong_only=true</code> with <code>X-User-Id</code>.</li>
+    <li>Backend reads watchlist from <code>users/{uid}/settings/watchlist</code>.</li>
+    <li><code>JPFinanceEngine.prefetch_market_data()</code> bulk-downloads 2y OHLCV + fundamentals (8-thread pool).</li>
+    <li>For each ticker, <code>process_ticker()</code> computes RSI/SMA/BB/ATR/VWAP/MACD/momentum, IV rank, fundamentals, signals → verdict.</li>
+    <li>Strategy builders fetch option chains from Tradier (fallback yfinance) and emit best 1–2 matches per strategy.</li>
+    <li>A <code>BackgroundTask</code> calls <code>_tracker.capture_scan_results()</code> → Firestore.</li>
+    <li>Optionally <code>_filter_strong_buy()</code> trims to STRONG BUY verdicts.</li>
+    <li>Flat JSON list returned; engine clears its caches; client renders results.</li>
+  </ol>
+
+  <h3>11.2 Async Scan</h3>
+  <ol>
+    <li>Client calls <code>/api/v1/scan/async</code> → backend spawns a background job, stores <code>scan_jobs[job_id]</code>.</li>
+    <li>Client polls <code>/api/v1/scan/status/{job_id}</code> every few seconds.</li>
+    <li>Job progress, then results returned; jobs older than 10 min auto-purge.</li>
+  </ol>
+
+  <h3>11.3 Backtest</h3>
+  <ol>
+    <li>Client posts <code>{ticker, strategy, action, strike, premium, expiry}</code> to <code>/api/v1/backtest</code>.</li>
+    <li>Backend computes price, RSI, SMA, IV, beta, 52w levels; dispatches to e.g. <code>_bt_csp()</code>.</li>
+    <li><code>get_bt_success()</code> returns historical hit-rate; ROC computed; signals/warnings built; verdict derived.</li>
+    <li>Result captured into <code>recommendations</code> with <code>source=backtest</code> and returned.</li>
+  </ol>
+
+  <h3>11.4 Weekly Evaluator</h3>
+  <ol>
+    <li>Cron triggers <code>WeeklyEvaluator.run()</code> on Monday 14:00 UTC.</li>
+    <li>Open recs re-priced and classified; outcome history appended.</li>
+    <li><code>SignalLearner.update_from_closed_recs(180)</code> recomputes <code>signal_stats</code> / <code>verdict_stats</code>.</li>
+    <li>Result stored in <code>meta/eval_status</code>; logs counts.</li>
+  </ol>
+
+  <h3>11.5 AI Cross-Validation (client-only)</h3>
+  <ol>
+    <li>User opens AI Guru tab on a ticker; <code>AiCrossValidator.validate()</code> runs.</li>
+    <li>Each configured engine (Claude/Gemini/ChatGPT/Perplexity/Grok) gets the same structured prompt in parallel coroutines.</li>
+    <li>Engine responses parsed into <code>{verdict, confidence, reasoning}</code>; consensus + agreement % computed.</li>
+    <li>Result cached in memory 15 min; displayed via <code>AiCrossValidationBadge</code>.</li>
+  </ol>
+</section>
+
+<!-- =================================================================== -->
+<section id="security">
+  <h2>12. Security &amp; Operational Concerns</h2>
+  <ul>
+    <li><strong>AI keys</strong> stored only in EncryptedSharedPreferences (AES256-GCM keys + values).</li>
+    <li><strong>HTTPS</strong> enforced (Render-managed TLS).</li>
+    <li><strong>Identity:</strong> Google Credential Manager → server trusts <code>X-User-Id</code> for namespacing in Firestore. (Server-side ID-token verification via <code>firebase-admin</code> is available and recommended for production hardening.)</li>
+    <li><strong>Firebase service account JSON</strong> ships in the repo for development; should be moved to a Render secret file or <code>GOOGLE_APPLICATION_CREDENTIALS</code> env var, and the JSON rotated.</li>
+    <li><strong>Rate limiting:</strong> Tradier capped at ~5 concurrent (≈ 2 req/s within 120 req/min); yfinance paced via <code>Semaphore(1)</code> with 15–20 s back-off on HTTP 429.</li>
+    <li><strong>Single-worker dyno:</strong> in-memory <code>scan_jobs</code> table is process-local — horizontally scaling Render to &gt; 1 worker would require moving it to Firestore/Redis.</li>
+    <li><strong>Memory hygiene:</strong> per-job cache clearing keeps the dyno bounded across long uptime windows.</li>
+    <li><strong>Notifications:</strong> entirely local (WorkManager); no FCM. Easier privacy story but no remote push.</li>
+  </ul>
+</section>
+
+<footer>
+  FinanceStreamAI · Architecture Document · April 2026
+</footer>
+
+</div>
+</body>
+</html>

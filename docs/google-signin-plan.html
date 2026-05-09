@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>StockWiz AI — Google Sign-In Implementation Plan</title>
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; max-width: 900px; margin: 40px auto; padding: 0 20px; color: #333; line-height: 1.6; }
+        h1 { color: #1a237e; border-bottom: 3px solid #1a237e; padding-bottom: 10px; }
+        h2 { color: #283593; margin-top: 30px; border-left: 4px solid #283593; padding-left: 10px; }
+        h3 { color: #3949ab; }
+        table { border-collapse: collapse; width: 100%; margin: 15px 0; }
+        th, td { border: 1px solid #ddd; padding: 10px 14px; text-align: left; }
+        th { background-color: #e8eaf6; font-weight: 600; }
+        tr:nth-child(even) { background-color: #f5f5f5; }
+        code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+        pre { background: #263238; color: #eeffff; padding: 16px; border-radius: 6px; overflow-x: auto; font-size: 0.9em; }
+        .note { background: #fff3e0; border-left: 4px solid #ff9800; padding: 12px 16px; margin: 15px 0; border-radius: 4px; }
+        .important { background: #fce4ec; border-left: 4px solid #e53935; padding: 12px 16px; margin: 15px 0; border-radius: 4px; }
+        .flow-box { background: #e3f2fd; padding: 16px; border-radius: 8px; font-family: monospace; white-space: pre-line; margin: 15px 0; }
+    </style>
+</head>
+<body>
+
+<h1>StockWiz AI — Google Sign-In Implementation Plan</h1>
+<p><strong>Date:</strong> April 18, 2026<br>
+<strong>Goal:</strong> Add Google Sign-In using Firebase Auth to support per-user data storage, enabling future features like Plaid brokerage integration.</p>
+
+<hr>
+
+<h2>1. App Side (Android)</h2>
+
+<table>
+    <tr><th>Component</th><th>What's Needed</th></tr>
+    <tr><td>Firebase Auth SDK</td><td>Add <code>firebase-auth</code> and <code>play-services-auth</code> dependencies to <code>app/build.gradle.kts</code></td></tr>
+    <tr><td>Google Sign-In UI</td><td>One-tap sign-in button on a login screen (Firebase provides this via Credential Manager)</td></tr>
+    <tr><td>ID Token</td><td>After Google sign-in, Firebase gives you an ID token (JWT)</td></tr>
+    <tr><td>Token in API calls</td><td>Send <code>Authorization: Bearer &lt;id_token&gt;</code> header with every API request to the backend</td></tr>
+    <tr><td>Session management</td><td>Persist login state locally, auto-refresh tokens, handle sign-out</td></tr>
+    <tr><td>Gate the app</td><td>Show login screen first → on success, show the main app</td></tr>
+</table>
+
+<h2>2. Backend Side (Render / Python)</h2>
+
+<table>
+    <tr><th>Component</th><th>What's Needed</th></tr>
+    <tr><td>Firebase Admin SDK</td><td><code>pip install firebase-admin</code> — verifies ID tokens from the app</td></tr>
+    <tr><td>Auth middleware</td><td>Every API endpoint extracts the <code>Authorization</code> header, verifies the JWT, and gets the <code>user_id</code></td></tr>
+    <tr><td>User table</td><td>New DB table: <code>users(uid, email, display_name, created_at)</code> — auto-created on first API call</td></tr>
+    <tr><td>Per-user data</td><td>All existing tables (portfolio, watchlist, settings) get a <code>user_id</code> foreign key</td></tr>
+    <tr><td>Migration</td><td>Existing anonymous data needs a strategy (discard or assign to a default user)</td></tr>
+    <tr><td>Database</td><td>If not already using one, you'll need PostgreSQL or similar (Render offers free Postgres)</td></tr>
+</table>
+
+<h2>3. Firebase Console Setup (One-Time)</h2>
+
+<table>
+    <tr><th>Step</th><th>Action</th></tr>
+    <tr><td>1</td><td>Create a Firebase project at <a href="https://console.firebase.google.com">console.firebase.google.com</a></td></tr>
+    <tr><td>2</td><td>Enable <strong>Google</strong> as a sign-in provider under Authentication → Sign-in method</td></tr>
+    <tr><td>3</td><td>Add your Android app (package: <code>com.example.financestreamai</code>) and download <code>google-services.json</code></td></tr>
+    <tr><td>4</td><td>Generate a <strong>service account key</strong> for the backend (Settings → Service accounts → Generate new key)</td></tr>
+</table>
+
+<h2>4. Data Flow</h2>
+
+<div class="flow-box">
+User taps "Sign in with Google"
+        ↓
+Firebase Auth → Google OAuth → returns ID token (JWT)
+        ↓
+App stores token, sends with every API call:
+  Authorization: Bearer eyJhbGciOi...
+        ↓
+Backend middleware:
+  firebase_admin.auth.verify_id_token(token) → { uid, email, name }
+        ↓
+Backend looks up / creates user by uid
+        ↓
+All queries scoped to that user_id
+</div>
+
+<h2>5. What Changes in Existing Code</h2>
+
+<table>
+    <tr><th>Area</th><th>Change</th></tr>
+    <tr><td>App: Retrofit</td><td>Add an OkHttp interceptor that attaches the Bearer token to every request</td></tr>
+    <tr><td>App: MainActivity</td><td>Add a login screen as the entry point; gate <code>MainScreen</code> behind auth state</td></tr>
+    <tr><td>App: SharedPreferences</td><td>Prefix keys with user ID (so switching accounts doesn't mix data)</td></tr>
+    <tr><td>Backend: Every endpoint</td><td>Wrap with auth middleware; query by <code>user_id</code></td></tr>
+    <tr><td>Backend: <code>/portfolio/*</code></td><td>Add <code>user_id</code> column, filter all reads/writes</td></tr>
+    <tr><td>Backend: <code>/scan</code></td><td>Can stay unauthenticated (optional) or require login</td></tr>
+</table>
+
+<h2>6. Effort Estimate</h2>
+
+<table>
+    <tr><th>Task</th><th>Scope</th></tr>
+    <tr><td>Firebase project setup</td><td>~1 hour</td></tr>
+    <tr><td>App: Google Sign-In + login screen</td><td>~1 day</td></tr>
+    <tr><td>App: Token interceptor + session management</td><td>~half day</td></tr>
+    <tr><td>Backend: Firebase Admin SDK + auth middleware</td><td>~half day</td></tr>
+    <tr><td>Backend: User table + per-user data migration</td><td>~1 day</td></tr>
+    <tr><td>Testing end-to-end</td><td>~1 day</td></tr>
+</table>
+
+<h2>7. Privacy Policy (Required)</h2>
+
+<div class="important">
+    <strong>Required:</strong> Google Play requires a privacy policy URL for apps that use Google Sign-In.
+    You'll need a simple hosted page stating what data you collect (email, portfolio data) and how it's used.
+</div>
+
+<h2>8. Future: Plaid Brokerage Integration</h2>
+
+<p>Once user accounts are in place, you can add Plaid to pull portfolio data from Robinhood, Schwab, Fidelity, etc.</p>
+
+<table>
+    <tr><th>Approach</th><th>Complexity</th><th>Feasibility</th></tr>
+    <tr><td>Robinhood unofficial API</td><td>Medium</td><td>Works but risky — can break anytime, violates TOS</td></tr>
+    <tr><td><strong>Plaid integration (Recommended)</strong></td><td>Medium-High</td><td>Official, reliable — connects to 12,000+ institutions including Robinhood</td></tr>
+    <tr><td>Robinhood OAuth</td><td>N/A</td><td>Not offered to third parties</td></tr>
+</table>
+
+<h3>Plaid Implementation Steps</h3>
+<ol>
+    <li><strong>Backend:</strong> Sign up for Plaid developer account, add Plaid SDK endpoints: <code>create_link_token</code>, <code>exchange_public_token</code>, <code>get_holdings</code></li>
+    <li><strong>Backend:</strong> Store Plaid access tokens securely per user</li>
+    <li><strong>App:</strong> Add Plaid Link Android SDK (opens a secure webview for brokerage login)</li>
+    <li><strong>App:</strong> Call backend to fetch holdings, map Plaid holdings → <code>ActivePosition</code> format</li>
+</ol>
+
+<div class="note">
+    <strong>Plaid Pricing:</strong> Free tier supports 100 connections. After that, ~$0.30–$1.50 per connection/month depending on the plan.
+</div>
+
+<hr>
+<p style="color: #888; font-size: 0.9em;">Generated for StockWiz AI project — April 18, 2026</p>
+
+</body>
+</html>

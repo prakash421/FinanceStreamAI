@@ -19,11 +19,20 @@ object GoogleAuthManager {
     private const val KEY_USER_EMAIL = "user_email"
     private const val KEY_USER_PHOTO = "user_photo"
 
-    // TODO: Replace with your actual Web Client ID from Google Cloud Console
-    // (OAuth 2.0 Client ID of type "Web application" — NOT the Android client ID).
-    // The Android client ID for this app's package + SHA-1 must also exist in the
-    // same Google Cloud project, but the value put here is the WEB one.
-    const val WEB_CLIENT_ID = "221128399172-ka2venipjrl8e8v4loiri69f1mfiarqe.apps.googleusercontent.com"
+    // Web Client ID (OAuth 2.0 client of type "Web application") from the same
+    // Firebase / Google Cloud project as google-services.json.
+    //
+    // IMPORTANT: This MUST be the *Web* client ID (client_type: 3 in
+    // google-services.json), NOT the Android client ID (client_type: 1).
+    // Credential Manager / GetGoogleIdOption.setServerClientId() always
+    // expects the Web client ID — the Android client is matched implicitly
+    // via the package name + SHA-1 fingerprint registered in Firebase.
+    //
+    // If you ever see "Caller has been temporarily blocked" or
+    // "16: developer console is not set up correctly" / "ApiException 10",
+    // it's almost always because the wrong client ID is used here OR the
+    // SHA-1 of the running APK is not registered in Firebase.
+    const val WEB_CLIENT_ID = "221128399172-0opj7q562kgnebtmu0gmfqj610hokh9j.apps.googleusercontent.com"
 
     fun isWebClientIdConfigured(): Boolean =
         WEB_CLIENT_ID.isNotBlank() &&

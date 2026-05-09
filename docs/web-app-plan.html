@@ -1,0 +1,328 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>StockWiz AI — Web App Development Plan</title>
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; max-width: 960px; margin: 40px auto; padding: 0 20px; color: #333; line-height: 1.6; }
+        h1 { color: #1a237e; border-bottom: 3px solid #1a237e; padding-bottom: 10px; }
+        h2 { color: #283593; margin-top: 30px; border-left: 4px solid #283593; padding-left: 10px; }
+        h3 { color: #3949ab; }
+        table { border-collapse: collapse; width: 100%; margin: 15px 0; }
+        th, td { border: 1px solid #ddd; padding: 10px 14px; text-align: left; }
+        th { background-color: #e8eaf6; font-weight: 600; }
+        tr:nth-child(even) { background-color: #f5f5f5; }
+        code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+        pre { background: #263238; color: #eeffff; padding: 16px; border-radius: 6px; overflow-x: auto; font-size: 0.9em; }
+        .note { background: #fff3e0; border-left: 4px solid #ff9800; padding: 12px 16px; margin: 15px 0; border-radius: 4px; }
+        .important { background: #fce4ec; border-left: 4px solid #e53935; padding: 12px 16px; margin: 15px 0; border-radius: 4px; }
+        .success { background: #e8f5e9; border-left: 4px solid #4caf50; padding: 12px 16px; margin: 15px 0; border-radius: 4px; }
+        .folder-tree { background: #263238; color: #eeffff; padding: 16px; border-radius: 6px; font-family: monospace; white-space: pre; }
+    </style>
+</head>
+<body>
+
+<h1>StockWiz AI — Web App Development Plan</h1>
+<p><strong>Date:</strong> April 18, 2026<br>
+<strong>Goal:</strong> Build a responsive web application with the same features as the Android app, reusing the existing backend API.<br>
+<strong>Backend:</strong> <code>https://financestreamai-backend.onrender.com/api/v1/</code> (no changes needed except CORS)</p>
+
+<hr>
+
+<h2>1. Tech Stack</h2>
+
+<table>
+    <tr><th>Layer</th><th>Technology</th><th>Why</th></tr>
+    <tr><td>Framework</td><td>Next.js 14+ (React)</td><td>SSR, file-based routing, mobile-responsive, great DX</td></tr>
+    <tr><td>Language</td><td>TypeScript</td><td>Type safety matching Kotlin data classes</td></tr>
+    <tr><td>UI Library</td><td>Tailwind CSS + shadcn/ui</td><td>Fast, clean components, responsive design built-in</td></tr>
+    <tr><td>State Management</td><td>TanStack Query (React Query)</td><td>API caching, loading states, auto-refetch</td></tr>
+    <tr><td>Auth</td><td>Firebase Auth (same project as Android)</td><td>Shared user accounts across Android + web</td></tr>
+    <tr><td>Hosting</td><td>Vercel (free tier)</td><td>Auto-deploy from GitHub, edge CDN, custom domain</td></tr>
+    <tr><td>Charts (optional)</td><td>Recharts or Lightweight Charts</td><td>For visualizing levels, P&L, portfolio performance</td></tr>
+</table>
+
+<h2>2. Pages / Views</h2>
+
+<table>
+    <tr><th>Page</th><th>Matches Android Tab</th><th>Features</th></tr>
+    <tr><td><code>/</code> (Dashboard)</td><td>Scan</td><td>Watchlist scanner, strategy filter, results cards</td></tr>
+    <tr><td><code>/portfolio</code></td><td>Portfolio</td><td>Active/closed positions, add/edit/close trades</td></tr>
+    <tr><td><code>/ai-guru</code></td><td>AI Guru</td><td>Backtest trade ideas, strategy selector</td></tr>
+    <tr><td><code>/alerts</code></td><td>Alerts</td><td>Notification history, daily recommendations</td></tr>
+    <tr><td><code>/login</code></td><td>—</td><td>Google Sign-In</td></tr>
+    <tr><td><code>/settings</code></td><td>—</td><td>Edit watchlist, tuner params, account</td></tr>
+</table>
+
+<h2>3. What to Build — Detailed Breakdown</h2>
+
+<h3>3.1 Project Setup</h3>
+<ul>
+    <li>Initialize Next.js project with TypeScript: <code>npx create-next-app@latest stockwiz-web --typescript --tailwind --app</code></li>
+    <li>Install shadcn/ui: <code>npx shadcn-ui@latest init</code></li>
+    <li>Install dependencies: <code>npm install firebase @tanstack/react-query axios</code></li>
+    <li>Configure Firebase Auth (Google provider — same Firebase project as Android app)</li>
+    <li>Set up environment variables for API base URL</li>
+</ul>
+
+<h3>3.2 API Integration Layer</h3>
+<ul>
+    <li>Create an API client (axios wrapper) pointing to the backend</li>
+    <li>TypeScript interfaces matching Kotlin data classes:
+        <ul>
+            <li><code>ScanResultItem</code> — ticker, price, rsi, beta, csps, diagonals, verticals, longLeaps, levels, signals, etc.</li>
+            <li><code>CspResult</code> — strike, premium, delta, roc, bt, expiry</li>
+            <li><code>DiagonalResult</code> — longLeg, shortLeg, netDebt, yieldRatio, bt, expiry</li>
+            <li><code>VerticalResult</code> — strikes, netDebit, bt, expiry</li>
+            <li><code>LongLeapsResult</code> — expiry, strike, premium, leverage, intrinsicBuffer, bt</li>
+            <li><code>StockLevels</code> — atr, support, resistance, swingHigh60d, swingLow60d, high52w, stopLoss, target, riskReward, riskNote</li>
+            <li><code>ActivePosition</code>, <code>ClosedPosition</code>, <code>TradeEntry</code>, <code>BacktestRequest/Response</code></li>
+            <li><code>HealthResponse</code> — status, capitalHealth, performance, activePositions, closedPositions</li>
+        </ul>
+    </li>
+    <li>Auth interceptor to attach Bearer token to all requests</li>
+    <li>Same endpoints: <code>/scan</code>, <code>/backtest</code>, <code>/portfolio/*</code>, <code>/health</code></li>
+</ul>
+
+<h3>3.3 Scan Page (Home <code>/</code>)</h3>
+<ul>
+    <li>Watchlist editor (stored in localStorage or user account)</li>
+    <li>Strategy dropdown: All, CSPs, Diagonals, Verticals, Long LEAPS</li>
+    <li>Tuner dialog: target delta, min ROC</li>
+    <li>Manual ticker search bar</li>
+    <li>Results cards with:
+        <ul>
+            <li>Ticker + Price header</li>
+            <li>RSI / Beta / IV chips (color-coded by value range)</li>
+            <li>Recommendation badge (BUY/SELL/HOLD) + overall assessment badge</li>
+            <li>Stock summary text</li>
+            <li>Expandable "More details": SMA200, Off 52W High, bullish/bearish signals, Key Levels card (deduplicated)</li>
+            <li>Strategy results: CSP, Diagonal, Vertical, LEAPS rows with BT badge + "Add to Portfolio" button</li>
+        </ul>
+    </li>
+    <li>Batch scanning with progress indicator (batches of 5 tickers)</li>
+    <li>Sort by strategy metric (ROC, yield, etc.)</li>
+</ul>
+
+<h3>3.4 Portfolio Page (<code>/portfolio</code>)</h3>
+<ul>
+    <li>Active positions table (sortable columns)</li>
+    <li>Closed positions table</li>
+    <li>Capital health + performance metrics cards</li>
+    <li>"Add Manual Position" dialog with fields: ticker, strategy, strike, expiry, premium, contracts</li>
+    <li>Edit position dialog</li>
+    <li>Close position dialog (exit price, exit date)</li>
+    <li>Delete position with confirmation</li>
+    <li>Auto-add from scan results</li>
+    <li>Local storage cache + backend sync (same merge logic as Android)</li>
+</ul>
+
+<h3>3.5 AI Guru Page (<code>/ai-guru</code>)</h3>
+<ul>
+    <li>Ticker input</li>
+    <li>Strategy selector: CSP, Sell Call, Vertical, Diagonal, Long LEAPS</li>
+    <li>Dynamic input fields per strategy:
+        <ul>
+            <li>CSP / Sell Call / Long LEAPS: Strike, Expiry, Premium</li>
+            <li>Vertical: Strike Buy, Strike Sell, Expiry, Premium</li>
+            <li>Diagonal: Strike Buy, Strike Sell, Expiry Buy, Expiry Sell, Premium</li>
+        </ul>
+    </li>
+    <li>Backtest results display: win rate, avg return, risk profile</li>
+</ul>
+
+<h3>3.6 Alerts Page (<code>/alerts</code>)</h3>
+<ul>
+    <li>Notification history list (stored per user in backend or localStorage)</li>
+    <li>Notification cards with timestamp, ticker, strategy, details</li>
+    <li>Mark as read / clear all</li>
+</ul>
+
+<h3>3.7 Authentication</h3>
+<ul>
+    <li>Google Sign-In button using Firebase Auth JS SDK</li>
+    <li>Protected routes (redirect to /login if not authenticated)</li>
+    <li>Token passed to API calls via axios interceptor</li>
+    <li>Same Firebase project = same user accounts as Android app</li>
+    <li>User profile display (name, email, avatar from Google)</li>
+</ul>
+
+<h3>3.8 Responsive Design</h3>
+<ul>
+    <li>Mobile-first layouts with Tailwind breakpoints (<code>sm:</code>, <code>md:</code>, <code>lg:</code>)</li>
+    <li>Bottom navigation on mobile, sidebar on desktop</li>
+    <li>Touch-friendly buttons and cards</li>
+    <li>Tables → card lists on mobile</li>
+    <li>PWA (Progressive Web App) for "app-like" feel on mobile home screen</li>
+</ul>
+
+<h2>4. Color Coding Reference (Match Android)</h2>
+
+<table>
+    <tr><th>Metric</th><th>Low</th><th>Normal</th><th>Elevated</th><th>High</th></tr>
+    <tr>
+        <td>RSI</td>
+        <td style="color:#2E7D32">< 30 (Oversold, Green)</td>
+        <td style="color:gray">30–70 (Gray)</td>
+        <td colspan="2" style="color:#C62828">> 70 (Overbought, Red)</td>
+    </tr>
+    <tr>
+        <td>Beta (β)</td>
+        <td style="color:#1565C0">< 0.8 (Low vol, Blue)</td>
+        <td style="color:gray">0.8–1.2 (Gray)</td>
+        <td style="color:#EF6C00">1.2–1.8 (Orange)</td>
+        <td style="color:#C62828">> 1.8 (Red)</td>
+    </tr>
+    <tr>
+        <td>IV Rank</td>
+        <td style="color:#1565C0">< 25% (Cheap, Blue)</td>
+        <td style="color:gray">25–50% (Gray)</td>
+        <td style="color:#2E7D32">50–75% (Good for sellers, Green)</td>
+        <td style="color:#EF6C00">> 75% (Elevated, Orange)</td>
+    </tr>
+    <tr>
+        <td>R:R Ratio</td>
+        <td style="color:#C62828">< 1.0 (Poor, Red)</td>
+        <td style="color:#EF6C00">1.0–2.0 (Okay, Orange)</td>
+        <td colspan="2" style="color:#2E7D32">≥ 2.0 (Good, Green)</td>
+    </tr>
+    <tr>
+        <td>Backtest</td>
+        <td style="color:#C62828">< 60% (Red)</td>
+        <td style="color:#EF6C00">60–80% (Orange)</td>
+        <td colspan="2" style="color:#2E7D32">≥ 80% (Green)</td>
+    </tr>
+</table>
+
+<h2>5. API Endpoints Reference</h2>
+
+<table>
+    <tr><th>Method</th><th>Endpoint</th><th>Purpose</th></tr>
+    <tr><td>GET</td><td><code>/scan?tickers=AAPL,MSFT&amp;strategy=csp&amp;target_delta=-0.25&amp;min_roc=4.0</code></td><td>Scan tickers for strategies</td></tr>
+    <tr><td>POST</td><td><code>/backtest</code></td><td>Backtest a trade idea (AI Guru)</td></tr>
+    <tr><td>GET</td><td><code>/health</code></td><td>Portfolio health + positions</td></tr>
+    <tr><td>GET</td><td><code>/portfolio/positions</code></td><td>Get all positions</td></tr>
+    <tr><td>POST</td><td><code>/portfolio/add</code></td><td>Add a position (returns <code>{"id": int}</code>)</td></tr>
+    <tr><td>PUT</td><td><code>/portfolio/update/{id}</code></td><td>Update a position</td></tr>
+    <tr><td>POST</td><td><code>/portfolio/close/{id}</code></td><td>Close a position</td></tr>
+    <tr><td>DELETE</td><td><code>/portfolio/remove/{id}</code></td><td>Delete a position</td></tr>
+</table>
+
+<h2>6. Folder Structure</h2>
+
+<div class="folder-tree">stockwiz-web/
+├── app/
+│   ├── layout.tsx              # Root layout, nav, auth provider, React Query provider
+│   ├── page.tsx                # Scan page (home)
+│   ├── portfolio/page.tsx      # Portfolio
+│   ├── ai-guru/page.tsx        # AI Guru
+│   ├── alerts/page.tsx         # Alerts
+│   ├── login/page.tsx          # Login
+│   └── settings/page.tsx       # Settings (watchlist, tuner, account)
+├── components/
+│   ├── layout/
+│   │   ├── Navbar.tsx          # Top nav (desktop) / bottom nav (mobile)
+│   │   └── AuthGuard.tsx       # Redirect to login if not authenticated
+│   ├── scan/
+│   │   ├── ScanResultCard.tsx  # Full result card with metrics, signals, strategies
+│   │   ├── StrategyRow.tsx     # CSP/Diagonal/Vertical/LEAPS opportunity row
+│   │   ├── MetricsChips.tsx    # RSI, Beta, IV color-coded chips
+│   │   ├── KeyLevelsCard.tsx   # Stop/Target/Support/Resistance display
+│   │   └── SignalsList.tsx     # Bullish/bearish signals
+│   ├── portfolio/
+│   │   ├── PositionsTable.tsx  # Active + closed positions
+│   │   ├── AddPositionDialog.tsx
+│   │   ├── EditPositionDialog.tsx
+│   │   └── ClosePositionDialog.tsx
+│   ├── ai-guru/
+│   │   ├── BacktestForm.tsx    # Dynamic fields per strategy
+│   │   └── BacktestResults.tsx
+│   └── ui/                     # shadcn/ui components (auto-generated)
+├── lib/
+│   ├── api.ts                  # Axios client + interceptor
+│   ├── firebase.ts             # Firebase config + auth helpers
+│   ├── types.ts                # TypeScript interfaces (matching Kotlin models)
+│   └── constants.ts            # Default watchlist, strategy options
+├── hooks/
+│   ├── useScan.ts              # React Query hook for scanning
+│   ├── usePortfolio.ts         # React Query hook for portfolio
+│   └── useAuth.ts              # Firebase auth state hook
+├── public/
+│   ├── icon-192.png            # PWA icon
+│   ├── icon-512.png            # PWA icon
+│   └── manifest.json           # PWA manifest
+├── tailwind.config.ts
+├── next.config.ts
+├── .env.local                  # NEXT_PUBLIC_API_URL, Firebase config
+└── package.json</div>
+
+<h2>7. Backend Changes Required</h2>
+
+<div class="success">
+    <strong>Minimal changes!</strong> The same backend serves both Android and Web.
+</div>
+
+<table>
+    <tr><th>Change</th><th>Details</th></tr>
+    <tr><td>CORS Headers</td><td>Add <code>Access-Control-Allow-Origin</code> for your Vercel domain (e.g. <code>https://stockwiz.ai</code>). In Flask: <code>flask-cors</code>. In FastAPI: <code>CORSMiddleware</code>.</td></tr>
+    <tr><td>That's it</td><td>Same API, same endpoints, same auth token verification</td></tr>
+</table>
+
+<h2>8. Optional Enhancements (Web Only)</h2>
+
+<ul>
+    <li><strong>PWA manifest</strong> — install to home screen on mobile, offline caching</li>
+    <li><strong>Dark mode</strong> — toggle using Tailwind's <code>dark:</code> classes</li>
+    <li><strong>CSV export</strong> — export portfolio data to spreadsheet</li>
+    <li><strong>Keyboard shortcuts</strong> — Ctrl+Enter to scan, tab navigation</li>
+    <li><strong>Real-time progress</strong> — WebSocket or Server-Sent Events for scan progress</li>
+    <li><strong>Charts</strong> — portfolio P&L over time, position breakdown pie chart</li>
+</ul>
+
+<h2>9. Effort Estimate</h2>
+
+<table>
+    <tr><th>Task</th><th>Scope</th></tr>
+    <tr><td>Project setup + Tailwind + shadcn/ui</td><td>~2 hours</td></tr>
+    <tr><td>Firebase Auth + Google Sign-In + auth guard</td><td>~1 day</td></tr>
+    <tr><td>API client + TypeScript types</td><td>~half day</td></tr>
+    <tr><td>Scan page with full results cards</td><td>~2 days</td></tr>
+    <tr><td>Portfolio page (tables, dialogs, CRUD)</td><td>~1.5 days</td></tr>
+    <tr><td>AI Guru page (dynamic form + results)</td><td>~1 day</td></tr>
+    <tr><td>Alerts page</td><td>~half day</td></tr>
+    <tr><td>Responsive design + mobile nav</td><td>~1 day</td></tr>
+    <tr><td>PWA setup</td><td>~2 hours</td></tr>
+    <tr><td>Testing + deployment to Vercel</td><td>~1 day</td></tr>
+    <tr><td><strong>Total</strong></td><td><strong>~8 days</strong></td></tr>
+</table>
+
+<h2>10. Deployment Steps</h2>
+
+<ol>
+    <li>Create a new GitHub repo: <code>StockWizAI-Web</code></li>
+    <li>Push the Next.js project to it</li>
+    <li>Connect to <a href="https://vercel.com">Vercel</a> → auto-deploys on every push</li>
+    <li>Set environment variables in Vercel dashboard:
+        <ul>
+            <li><code>NEXT_PUBLIC_API_URL=https://financestreamai-backend.onrender.com/api/v1</code></li>
+            <li><code>NEXT_PUBLIC_FIREBASE_API_KEY=...</code></li>
+            <li><code>NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN=...</code></li>
+            <li><code>NEXT_PUBLIC_FIREBASE_PROJECT_ID=...</code></li>
+        </ul>
+    </li>
+    <li>Add CORS to backend for the Vercel domain</li>
+    <li>(Optional) Custom domain: <code>stockwiz.ai</code> or <code>app.stockwiz.ai</code></li>
+</ol>
+
+<h2>11. Default Watchlist (Same as Android)</h2>
+
+<pre>ALAB, PLTR, CRWD, SNOW, TSLA, NFLX, ARM, MSFT, META, NVDA, MSTR, SMCI, APP, SHOP, AVGO,
+SITM, HOOD, CRWV, IREN, RDDT, AMZN, TSM, UBER, COIN, SNDK, MU, WDC, STX, BE, NOW, CRM,
+ADBE, VRT, TEAM, NBIS, CRDO</pre>
+
+<hr>
+<p style="color: #888; font-size: 0.9em;">Generated for StockWiz AI project — April 18, 2026</p>
+
+</body>
+</html>
