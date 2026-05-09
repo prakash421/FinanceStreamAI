@@ -2050,13 +2050,17 @@ fun ScanScreen() {
         // Publish to the shared holder so the Gemini chat screen can use the
         // latest scan as conversation context without re-fetching.
         LastScanContext.results = scanResults
-        if (!AiKeyManager.hasAnyKeys(context)) return@LaunchedEffect
+        // hasAnyKeys touches EncryptedSharedPreferences which is expensive
+        // on first read (AES-GCM keystore unwrap). Move off the main thread
+        // so the scan-results UI renders immediately.
+        val keysAvailable = withContext(Dispatchers.IO) { AiKeyManager.hasAnyKeys(context) }
+        if (!keysAvailable) return@LaunchedEffect
 
         val strongBuys = scanResults.filter { item ->
             val rec = item.stockRecommendation ?: ""
             val overall = item.overall ?: ""
             rec.contains("STRONG BUY", true) || overall.contains("STRONG", true)
-        }
+        }.take(3)  // Cap to top 3 to avoid 5 AI engines x N tickers swamping device + API quotas
 
         for (item in strongBuys) {
             if (aiValidations.containsKey(item.ticker)) continue
@@ -2392,9 +2396,18 @@ fun ScanScreen() {
                         val total = asyncResp.totalTickers ?: watchlist.size
                         scanProgress = "Scanning 0/$total symbols..."
 
-                        // Poll for results
+                        // Poll for results — start fast (small scans often
+                        // complete inside 2-3s), back off gradually so we
+                        // don't hammer the backend on long scans.
+                        var pollCount = 0
                         while (true) {
-                            delay(2000)
+                            val pollDelay = when {
+                                pollCount < 3 -> 500L    // 0.5s for first 1.5s
+                                pollCount < 8 -> 1000L   // then 1s for next 5s
+                                else -> 2000L            // then 2s steady-state
+                            }
+                            delay(pollDelay)
+                            pollCount++
                             val body = withContext(Dispatchers.IO) {
                                 apiService.getScanStatus(jobId).string()
                             }

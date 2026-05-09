@@ -87,25 +87,46 @@ object AiKeyManager {
 
     private val ALL_KEYS = listOf(KEY_CLAUDE, KEY_GEMINI, KEY_CHATGPT, KEY_PERPLEXITY, KEY_GROK)
 
-    private fun getPrefs(context: Context) = try {
-        val masterKey = MasterKey.Builder(context)
-            .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
-            .build()
-        EncryptedSharedPreferences.create(
-            context,
-            PREFS_FILE,
-            masterKey,
-            EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
-            EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
-        )
-    } catch (e: Exception) {
-        // Fallback to regular prefs if encrypted fails (rare, old devices)
-        Log.e("AiKeyManager", "Encrypted prefs failed, using fallback", e)
-        context.getSharedPreferences("ai_api_keys_fallback", Context.MODE_PRIVATE)
+    // Cached EncryptedSharedPreferences instance. Building one is expensive
+    // (~50-200ms of AES-GCM keystore work) so we MUST NOT do it on every
+    // read or the scan-completion LaunchedEffect (which calls hasAnyKeys ->
+    // getKey x5) stalls the main thread for 1-2 seconds.
+    @Volatile private var cachedPrefs: android.content.SharedPreferences? = null
+    @Volatile private var cachedBackupPrefs: android.content.SharedPreferences? = null
+
+    private fun getPrefs(context: Context): android.content.SharedPreferences {
+        cachedPrefs?.let { return it }
+        synchronized(this) {
+            cachedPrefs?.let { return it }
+            val built = try {
+                val masterKey = MasterKey.Builder(context.applicationContext)
+                    .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
+                    .build()
+                EncryptedSharedPreferences.create(
+                    context.applicationContext,
+                    PREFS_FILE,
+                    masterKey,
+                    EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
+                    EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
+                )
+            } catch (e: Exception) {
+                Log.e("AiKeyManager", "Encrypted prefs failed, using fallback", e)
+                context.applicationContext.getSharedPreferences("ai_api_keys_fallback", Context.MODE_PRIVATE)
+            }
+            cachedPrefs = built
+            return built
+        }
     }
 
-    private fun getBackupPrefs(context: Context) =
-        context.getSharedPreferences(BACKUP_PREFS_FILE, Context.MODE_PRIVATE)
+    private fun getBackupPrefs(context: Context): android.content.SharedPreferences {
+        cachedBackupPrefs?.let { return it }
+        synchronized(this) {
+            cachedBackupPrefs?.let { return it }
+            val p = context.applicationContext.getSharedPreferences(BACKUP_PREFS_FILE, Context.MODE_PRIVATE)
+            cachedBackupPrefs = p
+            return p
+        }
+    }
 
     // -------- Obfuscation (XOR + Base64) --------
     internal fun obfuscate(value: String): String {
@@ -166,16 +187,31 @@ object AiKeyManager {
         getBackupPrefs(context).edit().remove(keyName).apply()
     }
 
-    fun hasAnyKeys(context: Context): Boolean = ALL_KEYS.any { getKey(context, it) != null }
+    fun hasAnyKeys(context: Context): Boolean {
+        // Read both stores once and short-circuit on the first non-blank
+        // value. Avoids the 5x getKey() loop which was hitting the encrypted
+        // store / backup mirror up to 10 times per call.
+        val active = getPrefs(context)
+        val backup = getBackupPrefs(context)
+        return ALL_KEYS.any { k ->
+            !active.getString(k, null).isNullOrBlank() ||
+                !backup.getString(k, null).isNullOrBlank()
+        }
+    }
 
     fun getConfiguredEngines(context: Context): List<String> {
-        val engines = mutableListOf<String>()
-        if (getKey(context, KEY_CLAUDE) != null) engines.add("Claude")
-        if (getKey(context, KEY_GEMINI) != null) engines.add("Gemini")
-        if (getKey(context, KEY_CHATGPT) != null) engines.add("ChatGPT")
-        if (getKey(context, KEY_PERPLEXITY) != null) engines.add("Perplexity")
-        if (getKey(context, KEY_GROK) != null) engines.add("Grok")
-        return engines
+        val active = getPrefs(context)
+        val backup = getBackupPrefs(context)
+        fun has(k: String): Boolean =
+            !active.getString(k, null).isNullOrBlank() ||
+                !backup.getString(k, null).isNullOrBlank()
+        return buildList {
+            if (has(KEY_CLAUDE)) add("Claude")
+            if (has(KEY_GEMINI)) add("Gemini")
+            if (has(KEY_CHATGPT)) add("ChatGPT")
+            if (has(KEY_PERPLEXITY)) add("Perplexity")
+            if (has(KEY_GROK)) add("Grok")
+        }
     }
 
     fun wasPromptShown(context: Context): Boolean =
@@ -338,8 +374,10 @@ Respond in EXACTLY this JSON format and nothing else:
 
     // -------- Google Gemini --------
     private fun callGemini(apiKey: String, prompt: String): AiEngineResult {
-        // Try gemini-2.0-flash first; fall back to gemini-1.5-flash if the model is unavailable
-        val models = listOf("gemini-2.0-flash", "gemini-1.5-flash")
+        // Model fallback chain. As of 2026: gemini-2.5-flash is the current
+        // stable fast model; gemini-flash-latest is an alias that always
+        // resolves to the newest stable; older 1.5 / 2.0 names were retired.
+        val models = listOf("gemini-2.5-flash", "gemini-flash-latest", "gemini-2.0-flash")
         var lastError = ""
         for (model in models) {
             try {
@@ -793,7 +831,7 @@ Respond with ONLY a single JSON object on one line, no markdown, no commentary:
 
     /** Returns (Decision, reasoning). On any failure returns (UNAVAILABLE, errorMessage). */
     private fun callGemini(apiKey: String, prompt: String): Pair<Decision, String> {
-        val models = listOf("gemini-2.0-flash", "gemini-1.5-flash")
+        val models = listOf("gemini-2.5-flash", "gemini-flash-latest", "gemini-2.0-flash")
         var lastErr = "no response"
         for (model in models) {
             try {
@@ -1031,7 +1069,7 @@ Respond with ONLY a single JSON object on one line, no markdown:
 
     /** Returns (parsed picks or null, error message). */
     private fun callGemini(apiKey: String, prompt: String): Pair<List<Pick>?, String> {
-        val models = listOf("gemini-2.0-flash", "gemini-1.5-flash")
+        val models = listOf("gemini-2.5-flash", "gemini-flash-latest", "gemini-2.0-flash")
         var lastErr = "no response"
         for (model in models) {
             try {
@@ -1203,7 +1241,7 @@ object GeminiChat {
     }
 
     private fun callGemini(apiKey: String, history: List<Message>, systemContext: String?): Reply {
-        val models = listOf("gemini-2.0-flash", "gemini-1.5-flash")
+        val models = listOf("gemini-2.5-flash", "gemini-flash-latest", "gemini-2.0-flash")
         var lastErr = "no response"
         val body = buildRequestBody(history, systemContext)
         for (model in models) {
