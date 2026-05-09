@@ -40,6 +40,27 @@ data class AiCrossValidation(
     val timestamp: Long = System.currentTimeMillis()
 )
 
+/**
+ * Pick the single best engine result to surface as the headline "Why?"
+ * reasoning in the expanded badge. Preference order:
+ *   1. Engine whose verdict matches the consensus AND has non-blank
+ *      reasoning, picking the highest confidence available.
+ *   2. Any engine with non-blank reasoning, highest confidence first.
+ *   3. null if no engine returned reasoning at all.
+ */
+internal fun pickHighlightReasoning(validation: AiCrossValidation): AiEngineResult? {
+    val withReasoning = validation.engines.filter { it.error == null && it.reasoning.isNotBlank() }
+    if (withReasoning.isEmpty()) return null
+    val rank = { c: String ->
+        when (c.uppercase()) { "HIGH" -> 3; "MEDIUM" -> 2; "LOW" -> 1; else -> 0 }
+    }
+    val consensusVerdict = validation.consensus.uppercase()
+        .removePrefix("STRONG ").trim()  // "STRONG BUY" -> "BUY" for matching engine verdicts
+    val matching = withReasoning.filter { it.verdict.uppercase() == consensusVerdict }
+    return (matching.ifEmpty { withReasoning })
+        .maxByOrNull { rank(it.confidence) }
+}
+
 // ============================================================
 // API Key Manager (encrypted local storage + backup-friendly mirror)
 // ============================================================
@@ -547,27 +568,80 @@ Respond in EXACTLY this JSON format and nothing else:
 
     // -------- Common JSON parser for AI responses --------
     private fun parseAiJson(engine: String, text: String): AiEngineResult {
-        // Extract JSON from response (may have markdown or text around it)
-        val jsonMatch = Regex("""\{[^{}]*"verdict"[^{}]*\}""", RegexOption.DOT_MATCHES_ALL).find(text)
-        val jsonStr = jsonMatch?.value ?: text.trim()
+        // Extract JSON from response. The reasoning field often contains
+        // commas and quoted phrases, so a non-greedy `{...}` regex would
+        // truncate it; use a balanced-brace scanner instead.
+        val jsonStr = extractFirstJsonObject(text) ?: text.trim()
         return try {
             val parsed = gson.fromJson(jsonStr, Map::class.java)
             AiEngineResult(
                 engine = engine,
                 verdict = (parsed["verdict"] as? String)?.uppercase()?.trim() ?: "N/A",
                 confidence = (parsed["confidence"] as? String)?.trim() ?: "N/A",
-                reasoning = (parsed["reasoning"] as? String)?.trim() ?: ""
+                reasoning = sanitizeReasoning((parsed["reasoning"] as? String) ?: "")
             )
         } catch (e: Exception) {
-            // Try to extract verdict/reasoning from plain text
-            val verdictMatch = Regex("""(?i)(BUY|SELL|HOLD|AVOID)""").find(text)
+            // Try to extract verdict/reasoning from plain text. Strip any
+            // JSON braces / code fences / quote artifacts so the user sees
+            // a clean prose snippet instead of "{\"verdict\":\"BUY\"...".
+            val verdictMatch = Regex("""(?i)\b(BUY|SELL|HOLD|AVOID)\b""").find(text)
             AiEngineResult(
                 engine = engine,
                 verdict = verdictMatch?.value?.uppercase() ?: "N/A",
                 confidence = "Low",
-                reasoning = text.take(200).trim()
+                reasoning = sanitizeReasoning(text)
             )
         }
+    }
+
+    /** Find the first balanced JSON object in [text] containing "verdict". */
+    private fun extractFirstJsonObject(text: String): String? {
+        val start = text.indexOf('{')
+        if (start < 0) return null
+        var depth = 0
+        var inString = false
+        var escape = false
+        for (i in start until text.length) {
+            val c = text[i]
+            if (escape) { escape = false; continue }
+            if (c == '\\') { escape = true; continue }
+            if (c == '"') { inString = !inString; continue }
+            if (inString) continue
+            when (c) {
+                '{' -> depth++
+                '}' -> {
+                    depth--
+                    if (depth == 0) {
+                        val candidate = text.substring(start, i + 1)
+                        if ("verdict" in candidate) return candidate
+                        return null
+                    }
+                }
+            }
+        }
+        return null
+    }
+
+    /** Strip JSON / markdown / quoting artifacts from a free-form
+     *  reasoning string so it renders as clean prose in the UI. */
+    internal fun sanitizeReasoning(raw: String): String {
+        if (raw.isBlank()) return ""
+        var s = raw.trim()
+        // Strip ```json ... ``` or ``` ... ``` fences.
+        s = s.removePrefix("```json").removePrefix("```").removeSuffix("```").trim()
+        // If the whole payload is still a JSON object, pull just the
+        // reasoning field out of it.
+        if (s.startsWith("{") && "\"reasoning\"" in s) {
+            Regex(""""reasoning"\s*:\s*"((?:[^"\\]|\\.)*)"""").find(s)?.groupValues?.getOrNull(1)?.let {
+                s = it.replace("\\\"", "\"").replace("\\n", " ")
+            }
+        }
+        // Remove stray surrounding braces / quotes.
+        s = s.trim().trim('{', '}').trim().trim('"').trim()
+        // Collapse whitespace.
+        s = s.replace(Regex("\\s+"), " ")
+        // Cap length so a runaway model doesn't blow up the row.
+        return if (s.length > 400) s.take(397) + "…" else s
     }
 
     // -------- Consensus builder --------

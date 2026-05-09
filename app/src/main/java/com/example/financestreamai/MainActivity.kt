@@ -35,6 +35,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
@@ -1646,6 +1647,13 @@ fun AiCrossValidationBadge(validation: AiCrossValidation?) {
         else -> Color.Gray
     }
 
+    // Whether the badge has anything worth expanding to. If every engine
+    // either failed or returned empty reasoning, the only extra info is
+    // the per-engine verdicts table — still useful, so we always allow
+    // expand, but the empty-reasoning case shows a clear placeholder
+    // instead of a blank panel.
+    val anyReasoning = validation.engines.any { it.error == null && it.reasoning.isNotBlank() }
+
     Column {
         // Clickable consensus badge
         Card(
@@ -1679,7 +1687,7 @@ fun AiCrossValidationBadge(validation: AiCrossValidation?) {
             }
         }
 
-        // Expanded detail showing each engine's verdict
+        // Expanded detail: top reasoning quote + per-engine verdicts.
         if (expanded) {
             Spacer(modifier = Modifier.height(4.dp))
             Card(
@@ -1689,7 +1697,51 @@ fun AiCrossValidationBadge(validation: AiCrossValidation?) {
             ) {
                 Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     Text("AI Cross-Validation", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
-                    Text(validation.summary, style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+                    if (validation.summary.isNotBlank()) {
+                        Text(validation.summary, style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+                    }
+
+                    // Highlight the strongest available reasoning at the top
+                    // so the user gets the "why" without scanning every
+                    // engine row. Picks the engine matching consensus first,
+                    // then any engine with non-blank reasoning.
+                    val highlight = pickHighlightReasoning(validation)
+                    if (highlight != null) {
+                        Surface(
+                            color = consensusColor.copy(alpha = 0.08f),
+                            shape = RoundedCornerShape(6.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                Text(
+                                    "💡 Why ${validation.consensus}? — ${highlight.engine}",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = FontWeight.Bold,
+                                    color = consensusColor
+                                )
+                                Text(
+                                    highlight.reasoning,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                            }
+                        }
+                    } else if (!anyReasoning) {
+                        Text(
+                            "No reasoning returned by any engine. Verdicts below are based on raw model output only.",
+                            style = MaterialTheme.typography.bodySmall,
+                            fontStyle = androidx.compose.ui.text.font.FontStyle.Italic,
+                            color = Color.Gray
+                        )
+                    }
+
+                    Text(
+                        "Per-engine breakdown",
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.Bold,
+                        color = Color.Gray,
+                        modifier = Modifier.padding(top = 2.dp)
+                    )
 
                     validation.engines.forEach { engine ->
                         HorizontalDivider()
@@ -1733,7 +1785,18 @@ fun AiCrossValidationBadge(validation: AiCrossValidation?) {
                                 color = Color(0xFFC62828).copy(alpha = 0.8f)
                             )
                         } else if (engine.reasoning.isNotBlank()) {
-                            Text(engine.reasoning, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text(
+                                "“${engine.reasoning}”",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        } else {
+                            Text(
+                                "(no reasoning provided)",
+                                style = MaterialTheme.typography.bodySmall,
+                                fontStyle = androidx.compose.ui.text.font.FontStyle.Italic,
+                                color = Color.Gray
+                            )
                         }
                     }
                 }
@@ -2928,11 +2991,12 @@ fun ScanScreen() {
 
             // Wrap results + chat overlay in a Box so the floating Gemini
             // FAB can sit on top of the results list. When the overlay is
-            // open the available vertical space splits 50/50: results on
-            // top (still scrollable), chat on bottom (scrollable + input).
+            // open the chat takes the larger share of the screen (60%) so
+            // multi-line Gemini answers are readable; the results list keeps
+            // ~40% and stays scrollable.
             Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
                 Column(modifier = Modifier.fillMaxSize()) {
-                    LazyColumn(modifier = Modifier.weight(if (askOverlayOpen) 0.5f else 1f)) {
+                    LazyColumn(modifier = Modifier.weight(if (askOverlayOpen) 0.4f else 1f)) {
                         items(displayedResults) { item ->
                             ScanResultCard(
                                 item, selectedStrategy, scope, context,
@@ -2943,26 +3007,48 @@ fun ScanScreen() {
                         }
                     }
                     if (askOverlayOpen) {
-                        // Drag handle / header for the chat panel.
+                        // Drag handle / header for the chat panel. Doubles
+                        // as the context-share toggle so the embedded panel
+                        // doesn't waste a second row on a banner.
                         Surface(
                             color = Color(0xFF2563EB),
                             modifier = Modifier.fillMaxWidth()
                         ) {
                             Row(
-                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                                modifier = Modifier.padding(start = 12.dp, end = 4.dp, top = 4.dp, bottom = 4.dp),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 Text("🤖", style = MaterialTheme.typography.labelLarge)
                                 Spacer(modifier = Modifier.width(6.dp))
-                                Text(
-                                    "Ask Gemini about your results",
-                                    color = Color.White,
-                                    fontWeight = FontWeight.Bold,
-                                    style = MaterialTheme.typography.labelMedium,
-                                    modifier = Modifier.weight(1f)
-                                )
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        "Ask Gemini",
+                                        color = Color.White,
+                                        fontWeight = FontWeight.Bold,
+                                        style = MaterialTheme.typography.labelMedium
+                                    )
+                                    if (LastScanContext.results.isNotEmpty()) {
+                                        Text(
+                                            if (chatPanelState.includeScanContext)
+                                                "Sharing ${LastScanContext.results.size.coerceAtMost(20)} results"
+                                            else "Context off",
+                                            color = Color.White.copy(alpha = 0.85f),
+                                            style = MaterialTheme.typography.labelSmall
+                                        )
+                                    }
+                                }
+                                if (LastScanContext.results.isNotEmpty()) {
+                                    Switch(
+                                        checked = chatPanelState.includeScanContext,
+                                        onCheckedChange = { chatPanelState.includeScanContext = it },
+                                        modifier = Modifier.scale(0.75f)
+                                    )
+                                }
                                 if (chatPanelState.messages.isNotEmpty()) {
-                                    TextButton(onClick = { chatPanelState.clear() }) {
+                                    TextButton(
+                                        onClick = { chatPanelState.clear() },
+                                        contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp)
+                                    ) {
                                         Text("Clear", color = Color.White, style = MaterialTheme.typography.labelSmall)
                                     }
                                 }
@@ -2976,7 +3062,7 @@ fun ScanScreen() {
                         }
                         GeminiChatPanel(
                             state = chatPanelState,
-                            modifier = Modifier.weight(0.5f).fillMaxWidth(),
+                            modifier = Modifier.weight(0.6f).fillMaxWidth(),
                             compact = true
                         )
                     }

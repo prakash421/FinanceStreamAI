@@ -993,7 +993,9 @@ Answer the user's questions concisely. When they reference a ticker that's in th
 
     Column(modifier = modifier) {
         // Context banner — shows whether scan results are being shared.
-        if (LastScanContext.results.isNotEmpty()) {
+        // Hidden in compact mode (split-screen overlay) since the embedding
+        // header already advertises the context and exposes the toggle.
+        if (!compact && LastScanContext.results.isNotEmpty()) {
             Surface(
                 modifier = Modifier.fillMaxWidth(),
                 color = if (state.includeScanContext) Color(0xFFEFF6FF) else Color(0xFFF1F5F9)
@@ -1097,32 +1099,34 @@ Answer the user's questions concisely. When they reference a ticker that's in th
             color = MaterialTheme.colorScheme.surface
         ) {
             Row(
-                modifier = Modifier.padding(horizontal = 12.dp, vertical = if (compact) 6.dp else 8.dp),
+                modifier = Modifier.padding(horizontal = 8.dp, vertical = if (compact) 4.dp else 8.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 OutlinedTextField(
                     value = state.input,
                     onValueChange = { state.input = it },
                     modifier = Modifier.weight(1f),
-                    placeholder = { Text("Ask anything…") },
+                    placeholder = { Text("Ask anything…", style = if (compact) MaterialTheme.typography.bodySmall else MaterialTheme.typography.bodyMedium) },
                     enabled = !state.sending && keyConfigured,
                     maxLines = if (compact) 2 else 4,
+                    textStyle = if (compact) MaterialTheme.typography.bodySmall else MaterialTheme.typography.bodyMedium,
                     shape = RoundedCornerShape(20.dp)
                 )
-                Spacer(modifier = Modifier.width(8.dp))
+                Spacer(modifier = Modifier.width(6.dp))
                 FilledIconButton(
                     onClick = ::send,
                     enabled = state.input.isNotBlank() && !state.sending && keyConfigured,
-                    colors = IconButtonDefaults.filledIconButtonColors(containerColor = Color(0xFF2563EB))
+                    colors = IconButtonDefaults.filledIconButtonColors(containerColor = Color(0xFF2563EB)),
+                    modifier = if (compact) Modifier.size(36.dp) else Modifier
                 ) {
                     if (state.sending) {
                         CircularProgressIndicator(
-                            modifier = Modifier.size(20.dp),
+                            modifier = Modifier.size(if (compact) 16.dp else 20.dp),
                             strokeWidth = 2.dp,
                             color = Color.White
                         )
                     } else {
-                        Icon(Icons.Default.Send, contentDescription = "Send", tint = Color.White)
+                        Icon(Icons.Default.Send, contentDescription = "Send", tint = Color.White, modifier = Modifier.size(if (compact) 16.dp else 24.dp))
                     }
                 }
             }
