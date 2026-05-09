@@ -17,6 +17,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
@@ -650,6 +651,210 @@ internal fun chunkWatchlistForParallelScan(
         start += take
     }
     return chunks
+}
+
+// ==========================================
+// Recommendation filter + metric color helpers
+// ==========================================
+
+/** Cap on tickers auto-validated by AI engines after a scan completes.
+ *  AiCrossValidator fans out to ~5 LLM engines per ticker, so this limits
+ *  total LLM calls to ~5 * MAX = ~75 per scan. Anything past this cap can
+ *  still be validated on demand via the per-card "Run AI" button. */
+const val MAX_AUTO_AI_VALIDATIONS = 15
+
+/** True if [recommendation]/[overall] is a buy-bias signal eligible for
+ *  automatic AI cross-validation. Loosely matches "STRONG BUY" and "BUY"
+ *  variants emitted by the backend. */
+internal fun isBuyRated(recommendation: String?, overall: String?): Boolean {
+    val bucket = recommendationBucket(recommendation, overall)
+    return bucket == "STRONG BUY" || bucket == "BUY"
+}
+
+/** Bucket a free-form recommendation/overall string into one of:
+ *  STRONG BUY / BUY / HOLD / SELL / AVOID / OTHER. Order matters — STRONG
+ *  must be checked before BUY since "STRONG BUY" contains "BUY". */
+internal fun recommendationBucket(recommendation: String?, overall: String?): String {
+    val s = ((recommendation ?: "") + " " + (overall ?: "")).uppercase()
+    return when {
+        s.isBlank() -> "OTHER"
+        "STRONG BUY" in s || "STRONG" in s && "BUY" in s -> "STRONG BUY"
+        "AVOID" in s -> "AVOID"
+        "STRONG SELL" in s || ("SELL" in s) -> "SELL"
+        "HOLD" in s || "NEUTRAL" in s || "CAUTION" in s -> "HOLD"
+        "BUY" in s || "OPPORTUNITY" in s -> "BUY"
+        else -> "OTHER"
+    }
+}
+
+/** Display color for a recommendation filter chip. */
+internal fun recommendationChipColor(bucket: String): androidx.compose.ui.graphics.Color = when (bucket) {
+    "STRONG BUY" -> androidx.compose.ui.graphics.Color(0xFF1B5E20)
+    "BUY" -> androidx.compose.ui.graphics.Color(0xFF2E7D32)
+    "HOLD" -> androidx.compose.ui.graphics.Color(0xFFEF6C00)
+    "SELL" -> androidx.compose.ui.graphics.Color(0xFFC62828)
+    "AVOID" -> androidx.compose.ui.graphics.Color(0xFF7F1D1D)
+    else -> androidx.compose.ui.graphics.Color(0xFF1565C0) // "All"
+}
+
+enum class MetricKind { RSI, BETA, IV }
+
+/** Bucket label for a metric value (used in chip text and unit tests). */
+internal fun metricBucket(kind: MetricKind, value: Double): String = when (kind) {
+    MetricKind.RSI -> when {
+        value < 30 -> "Oversold"
+        value < 40 -> "Cooling"
+        value <= 60 -> "Healthy"
+        value <= 70 -> "Climbing"
+        else -> "Overbought"
+    }
+    MetricKind.BETA -> when {
+        value < 0.7 -> "Defensive"
+        value <= 1.3 -> "Balanced"
+        value <= 2.0 -> "High"
+        else -> "Very High"
+    }
+    MetricKind.IV -> when {
+        value < 25 -> "Thin"
+        value < 50 -> "Modest"
+        value <= 75 -> "Juicy"
+        else -> "Rich"
+    }
+}
+
+/**
+ * Pair of (color, short hint) for a metric value, biased towards the
+ * options-seller perspective:
+ *   - Green = favourable (healthy RSI, balanced β, juicy/rich IV premium)
+ *   - Blue  = caution / wait (oversold RSI, defensive β, thin IV)
+ *   - Orange / red = risk (overbought RSI, very high β, etc.)
+ *
+ * Designed to be consistent across the three metric types: green always
+ * means "this is what you want as a premium seller".
+ */
+internal fun metricColor(kind: MetricKind, value: Double): Pair<androidx.compose.ui.graphics.Color, String> {
+    val green = androidx.compose.ui.graphics.Color(0xFF2E7D32)
+    val deepGreen = androidx.compose.ui.graphics.Color(0xFF1B5E20)
+    val blue = androidx.compose.ui.graphics.Color(0xFF1565C0)
+    val orange = androidx.compose.ui.graphics.Color(0xFFEF6C00)
+    val red = androidx.compose.ui.graphics.Color(0xFFC62828)
+    val bucket = metricBucket(kind, value)
+    val color = when (kind) {
+        MetricKind.RSI -> when (bucket) {
+            "Healthy" -> green
+            "Climbing" -> orange
+            "Overbought" -> red
+            "Cooling" -> blue
+            else -> blue // Oversold
+        }
+        MetricKind.BETA -> when (bucket) {
+            "Balanced" -> green
+            "High" -> orange
+            "Very High" -> red
+            else -> blue // Defensive
+        }
+        MetricKind.IV -> when (bucket) {
+            "Rich" -> deepGreen
+            "Juicy" -> green
+            "Modest" -> orange
+            else -> red // Thin
+        }
+    }
+    return color to bucket
+}
+
+/** Modal explaining the colored RSI/β/IV chips. */
+@Composable
+fun MetricLegendDialog(onDismiss: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        confirmButton = { TextButton(onClick = onDismiss) { Text("Got it") } },
+        title = { Text("Color legend") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text("Colors are biased toward the premium-seller view: green = favourable, blue = caution/wait, orange/red = risk.", style = MaterialTheme.typography.bodySmall)
+                LegendRow("RSI", listOf(
+                    "Oversold (<30)" to androidx.compose.ui.graphics.Color(0xFF1565C0),
+                    "Cooling (30–40)" to androidx.compose.ui.graphics.Color(0xFF1565C0),
+                    "Healthy (40–60)" to androidx.compose.ui.graphics.Color(0xFF2E7D32),
+                    "Climbing (60–70)" to androidx.compose.ui.graphics.Color(0xFFEF6C00),
+                    "Overbought (>70)" to androidx.compose.ui.graphics.Color(0xFFC62828)
+                ))
+                LegendRow("Beta (β) — relative to S&P", listOf(
+                    "Defensive (<0.7)" to androidx.compose.ui.graphics.Color(0xFF1565C0),
+                    "Balanced (0.7–1.3)" to androidx.compose.ui.graphics.Color(0xFF2E7D32),
+                    "High (1.3–2.0)" to androidx.compose.ui.graphics.Color(0xFFEF6C00),
+                    "Very High (>2.0)" to androidx.compose.ui.graphics.Color(0xFFC62828)
+                ))
+                LegendRow("IV Rank — premium richness", listOf(
+                    "Thin (<25%)" to androidx.compose.ui.graphics.Color(0xFFC62828),
+                    "Modest (25–50%)" to androidx.compose.ui.graphics.Color(0xFFEF6C00),
+                    "Juicy (50–75%)" to androidx.compose.ui.graphics.Color(0xFF2E7D32),
+                    "Rich (>75%)" to androidx.compose.ui.graphics.Color(0xFF1B5E20)
+                ))
+            }
+        }
+    )
+}
+
+@Composable
+private fun LegendRow(title: String, entries: List<Pair<String, androidx.compose.ui.graphics.Color>>) {
+    Column {
+        Text(title, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.labelMedium)
+        entries.forEach { (label, c) ->
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.padding(top = 2.dp)) {
+                androidx.compose.foundation.layout.Box(
+                    modifier = Modifier
+                        .size(10.dp)
+                        .background(c, RoundedCornerShape(2.dp))
+                )
+                Text(label, style = MaterialTheme.typography.bodySmall)
+            }
+        }
+    }
+}
+
+/** Shared launcher used by both auto-validate and the manual "Run AI"
+ *  button so dedup behaviour matches. */
+private fun triggerAiValidation(
+    item: ScanResultItem,
+    scope: kotlinx.coroutines.CoroutineScope,
+    context: android.content.Context,
+    aiValidations: androidx.compose.runtime.snapshots.SnapshotStateMap<String, AiCrossValidation>,
+    aiValidatingTickers: Set<String>,
+    setValidating: (Set<String>) -> Unit
+) {
+    if (aiValidations.containsKey(item.ticker)) return
+    if (aiValidatingTickers.contains(item.ticker)) return
+    setValidating(aiValidatingTickers + item.ticker)
+    scope.launch {
+        try {
+            val strategies = buildList {
+                if (!item.csps.isNullOrEmpty()) add("CSP")
+                if (!item.diagonals.isNullOrEmpty()) add("Diagonal")
+                if (!item.verticals.isNullOrEmpty()) add("Vertical")
+                if (!item.longLeaps.isNullOrEmpty()) add("LEAPS")
+            }.joinToString(", ")
+            val result = AiCrossValidator.validate(
+                context = context,
+                ticker = item.ticker,
+                price = item.price,
+                recommendation = item.stockRecommendation ?: item.overall ?: "STRONG BUY",
+                signals = item.bullishSignals ?: emptyList(),
+                warnings = item.bearishSignals ?: emptyList(),
+                levels = item.levels,
+                sector = item.sector,
+                strategies = strategies
+            )
+            aiValidations[item.ticker] = result
+        } catch (e: Exception) {
+            Log.e("AiValidation", "Failed for ${item.ticker}: ${e.message}")
+        } finally {
+            // Re-read current set since other launches may have mutated it.
+            // The compose state setter handles atomic swap.
+            setValidating((aiValidatingTickers - item.ticker))
+        }
+    }
 }
 
 /**
@@ -2054,7 +2259,7 @@ fun MainScreen(startTab: Int = 0, onSignOut: () -> Unit = {}) {
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 fun ScanScreen() {
     val context = LocalContext.current
@@ -2101,44 +2306,26 @@ fun ScanScreen() {
         val keysAvailable = withContext(Dispatchers.IO) { AiKeyManager.hasAnyKeys(context) }
         if (!keysAvailable) return@LaunchedEffect
 
-        val strongBuys = scanResults.filter { item ->
-            val rec = item.stockRecommendation ?: ""
-            val overall = item.overall ?: ""
-            rec.contains("STRONG BUY", true) || overall.contains("STRONG", true)
-        }.take(3)  // Cap to top 3 to avoid 5 AI engines x N tickers swamping device + API quotas
+        // Auto-validate every BUY-rated ticker (STRONG BUY + BUY), capped to
+        // [MAX_AUTO_AI_VALIDATIONS] so a 100-symbol watchlist doesn't fire
+        // hundreds of LLM calls (5 engines x N tickers). Users can manually
+        // trigger AI for any other row via the per-card "Run AI" button.
+        val toValidate = scanResults
+            .filter { isBuyRated(it.stockRecommendation, it.overall) }
+            .take(MAX_AUTO_AI_VALIDATIONS)
 
-        for (item in strongBuys) {
-            if (aiValidations.containsKey(item.ticker)) continue
-            if (aiValidatingTickers.contains(item.ticker)) continue
-
-            aiValidatingTickers = aiValidatingTickers + item.ticker
-            scope.launch {
-                try {
-                    val strategies = buildList {
-                        if (!item.csps.isNullOrEmpty()) add("CSP")
-                        if (!item.diagonals.isNullOrEmpty()) add("Diagonal")
-                        if (!item.verticals.isNullOrEmpty()) add("Vertical")
-                        if (!item.longLeaps.isNullOrEmpty()) add("LEAPS")
-                    }.joinToString(", ")
-
-                    val result = AiCrossValidator.validate(
-                        context = context,
-                        ticker = item.ticker,
-                        price = item.price,
-                        recommendation = item.stockRecommendation ?: item.overall ?: "STRONG BUY",
-                        signals = item.bullishSignals ?: emptyList(),
-                        warnings = item.bearishSignals ?: emptyList(),
-                        levels = item.levels,
-                        sector = item.sector,
-                        strategies = strategies
-                    )
-                    aiValidations[item.ticker] = result
-                } catch (e: Exception) {
-                    Log.e("AiValidation", "Failed for ${item.ticker}: ${e.message}")
-                } finally {
-                    aiValidatingTickers = aiValidatingTickers - item.ticker
-                }
+        for (item in toValidate) {
+            triggerAiValidation(item, scope, context, aiValidations, aiValidatingTickers) { newSet ->
+                aiValidatingTickers = newSet
             }
+        }
+    }
+
+    // Manual per-card AI trigger (reuses the same launch path as auto-validate
+    // so behaviour & dedup are identical).
+    val onRunAi: (ScanResultItem) -> Unit = { item ->
+        triggerAiValidation(item, scope, context, aiValidations, aiValidatingTickers) { newSet ->
+            aiValidatingTickers = newSet
         }
     }
 
@@ -2656,6 +2843,39 @@ fun ScanScreen() {
 
         // Results List
         if (scanResults.isNotEmpty()) {
+            // Recommendation filter chips. Buckets are derived from the
+            // raw stockRecommendation/overall strings via [recommendationBucket]
+            // so the chips work even when the backend returns variants like
+            // "STRONG BUY (Confirmed)" or "BUY — Trending".
+            var recFilter by remember(scanResults) { mutableStateOf("All") }
+            val bucketCounts = remember(scanResults) {
+                scanResults.groupingBy {
+                    recommendationBucket(it.stockRecommendation, it.overall)
+                }.eachCount()
+            }
+            val filterOrder = listOf("All", "STRONG BUY", "BUY", "HOLD", "SELL", "AVOID")
+            val visibleFilters = filterOrder.filter { f -> f == "All" || (bucketCounts[f] ?: 0) > 0 }
+            FlowRow(
+                modifier = Modifier.fillMaxWidth().padding(bottom = 6.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                visibleFilters.forEach { f ->
+                    val count = if (f == "All") scanResults.size else (bucketCounts[f] ?: 0)
+                    val selected = recFilter == f
+                    val chipColor = recommendationChipColor(f)
+                    FilterChip(
+                        selected = selected,
+                        onClick = { recFilter = f },
+                        label = { Text("$f ($count)", style = MaterialTheme.typography.labelSmall) },
+                        colors = FilterChipDefaults.filterChipColors(
+                            selectedContainerColor = chipColor.copy(alpha = 0.18f),
+                            selectedLabelColor = chipColor
+                        )
+                    )
+                }
+            }
+
             // Sort the overall list of tickers based on the selected strategy's best metric
             val sortedResults = remember(scanResults, selectedStrategy) {
                 when (selectedStrategy) {
@@ -2668,12 +2888,27 @@ fun ScanScreen() {
                     else -> scanResults
                 }
             }
+            val displayedResults = remember(sortedResults, recFilter) {
+                if (recFilter == "All") sortedResults
+                else sortedResults.filter {
+                    recommendationBucket(it.stockRecommendation, it.overall) == recFilter
+                }
+            }
+            if (displayedResults.isEmpty()) {
+                Text(
+                    "No ${recFilter} results.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Color.Gray,
+                    modifier = Modifier.padding(8.dp)
+                )
+            }
             LazyColumn(modifier = Modifier.weight(1f)) {
-                items(sortedResults) { item ->
+                items(displayedResults) { item ->
                     ScanResultCard(
                         item, selectedStrategy, scope, context,
                         aiValidation = aiValidations[item.ticker],
-                        isAiValidating = aiValidatingTickers.contains(item.ticker)
+                        isAiValidating = aiValidatingTickers.contains(item.ticker),
+                        onRunAi = { onRunAi(item) }
                     )
                 }
             }
@@ -2689,7 +2924,8 @@ fun ScanResultCard(
     scope: kotlinx.coroutines.CoroutineScope,
     context: android.content.Context,
     aiValidation: AiCrossValidation? = null,
-    isAiValidating: Boolean = false
+    isAiValidating: Boolean = false,
+    onRunAi: (() -> Unit)? = null
 ) {
     val hasStrategies = !item.csps.isNullOrEmpty() || !item.diagonals.isNullOrEmpty() ||
             !item.verticals.isNullOrEmpty() || !item.longLeaps.isNullOrEmpty()
@@ -2736,37 +2972,40 @@ fun ScanResultCard(
 
             Spacer(modifier = Modifier.height(6.dp))
 
-            // Key metrics (always visible): RSI, Beta, IV
+            // Key metrics (always visible): RSI, Beta, IV — colored per
+            // [metricColor]/[metricLabel] using options-seller semantics:
+            // green = favourable, red = unfavourable, blue = caution. The
+            // help icon opens a legend dialog explaining each band.
+            var showLegend by remember { mutableStateOf(false) }
             FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp), modifier = Modifier.fillMaxWidth()) {
                 if (item.rsi != null) {
-                    val rsiColor = if (item.rsi < 30) Color(0xFF2E7D32) else if (item.rsi > 70) Color(0xFFC62828) else Color.Gray
-                    Card(colors = CardDefaults.cardColors(containerColor = rsiColor.copy(alpha = 0.12f)), shape = RoundedCornerShape(6.dp)) {
-                        Text("RSI ${"%.0f".format(item.rsi)}", modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp), style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold, color = rsiColor)
+                    val (rsiColor, rsiHint) = metricColor(MetricKind.RSI, item.rsi)
+                    Card(colors = CardDefaults.cardColors(containerColor = rsiColor.copy(alpha = 0.14f)), shape = RoundedCornerShape(6.dp)) {
+                        Text("RSI ${"%.0f".format(item.rsi)} · $rsiHint", modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp), style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold, color = rsiColor)
                     }
                 }
                 if (item.beta != null) {
-                    val betaColor = when {
-                        item.beta < 0.8 -> Color(0xFF1565C0)   // Low vol — blue
-                        item.beta <= 1.2 -> Color.Gray          // Normal
-                        item.beta <= 1.8 -> Color(0xFFEF6C00)   // Elevated — orange
-                        else -> Color(0xFFC62828)                // High vol — red
-                    }
-                    Card(colors = CardDefaults.cardColors(containerColor = betaColor.copy(alpha = 0.12f)), shape = RoundedCornerShape(6.dp)) {
-                        Text("β ${"%.2f".format(item.beta)}", modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp), style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold, color = betaColor)
+                    val (betaColor, betaHint) = metricColor(MetricKind.BETA, item.beta)
+                    Card(colors = CardDefaults.cardColors(containerColor = betaColor.copy(alpha = 0.14f)), shape = RoundedCornerShape(6.dp)) {
+                        Text("β ${"%.2f".format(item.beta)} · $betaHint", modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp), style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold, color = betaColor)
                     }
                 }
                 if (item.ivRank != null) {
                     val ivNum = item.ivRank.replace("%", "").trim().toDoubleOrNull()
-                    val ivColor = when {
-                        ivNum == null -> Color.Gray
-                        ivNum < 25 -> Color(0xFF1565C0)         // Low IV — blue
-                        ivNum <= 50 -> Color.Gray                // Normal
-                        ivNum <= 75 -> Color(0xFF2E7D32)         // High IV — green (good for sellers)
-                        else -> Color(0xFFEF6C00)                // Very high IV — orange
+                    if (ivNum != null) {
+                        val (ivColor, ivHint) = metricColor(MetricKind.IV, ivNum)
+                        Card(colors = CardDefaults.cardColors(containerColor = ivColor.copy(alpha = 0.14f)), shape = RoundedCornerShape(6.dp)) {
+                            Text("IV ${item.ivRank} · $ivHint", modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp), style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold, color = ivColor)
+                        }
+                    } else {
+                        Card(colors = CardDefaults.cardColors(containerColor = Color.Gray.copy(alpha = 0.12f)), shape = RoundedCornerShape(6.dp)) {
+                            Text("IV ${item.ivRank}", modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp), style = MaterialTheme.typography.labelSmall, color = Color.Gray)
+                        }
                     }
-                    Card(colors = CardDefaults.cardColors(containerColor = ivColor.copy(alpha = 0.12f)), shape = RoundedCornerShape(6.dp)) {
-                        Text("IV ${item.ivRank}", modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp), style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold, color = ivColor)
-                    }
+                }
+                // Help icon — explains the colored chips
+                IconButton(onClick = { showLegend = true }, modifier = Modifier.size(22.dp)) {
+                    Icon(Icons.Default.Info, contentDescription = "Color legend", modifier = Modifier.size(16.dp), tint = Color(0xFF64748B))
                 }
                 // Earnings date chip
                 if (item.nextEarningsDate != null) {
@@ -2860,6 +3099,23 @@ fun ScanResultCard(
                     CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 2.dp, color = Color(0xFF7C3AED))
                     Text("AI cross-validating...", style = MaterialTheme.typography.labelSmall, color = Color(0xFF7C3AED))
                 }
+            } else if (onRunAi != null) {
+                // Manual "Run AI" trigger for rows that weren't auto-validated
+                // (e.g. HOLD/SELL rows or anything past the auto-validate cap).
+                Spacer(modifier = Modifier.height(6.dp))
+                TextButton(
+                    onClick = onRunAi,
+                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
+                ) {
+                    Text("🤖", style = MaterialTheme.typography.labelSmall)
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text("Run AI cross-validation", style = MaterialTheme.typography.labelSmall, color = Color(0xFF7C3AED))
+                }
+            }
+
+            // Legend dialog explaining the colored RSI/β/IV chips above.
+            if (showLegend) {
+                MetricLegendDialog(onDismiss = { showLegend = false })
             }
 
             // Expandable details section
