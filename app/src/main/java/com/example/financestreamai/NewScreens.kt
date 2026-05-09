@@ -1,5 +1,6 @@
 package com.example.financestreamai
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
@@ -32,15 +33,15 @@ fun SectorRotationScreen(onBack: () -> Unit) {
     var errorMessage by remember { mutableStateOf<String?>(null) }
     var selectedPeriod by remember { mutableStateOf("3mo") }
     val periods = listOf("1mo", "3mo", "6mo")
-    // Backend accepts "1m" / "3m" / "6m" (not "1mo")
-    fun periodParam(p: String) = p.replace("mo", "m")
+    // Backend accepts only "1mo" / "3mo" / "6mo" — verified May 2026.
+    // (Earlier code converted these to "1m"/"3m"/"6m" which returned HTTP 400.)
 
     fun loadData() {
         scope.launch {
             try {
                 isLoading = true
                 errorMessage = null
-                data = withContext(Dispatchers.IO) { apiService.getSectorRotation(periodParam(selectedPeriod)) }
+                data = withContext(Dispatchers.IO) { apiService.getSectorRotation(selectedPeriod) }
             } catch (e: Exception) {
                 errorMessage = e.message ?: "Failed to load sector rotation data"
             } finally {
@@ -244,12 +245,20 @@ fun AiLearningsScreen(onBack: () -> Unit) {
     LaunchedEffect(Unit) {
         isLoading = true
         try {
+            // Stats and history are mandatory — surface their errors.
             val statsResult = withContext(Dispatchers.IO) { apiService.getRecommendationStats() }
             stats = statsResult
-            val learningsResult = withContext(Dispatchers.IO) { apiService.getLearnings() }
-            learnings = learningsResult
-            val historyResult = withContext(Dispatchers.IO) { apiService.getRecommendationHistory(days = 30, limit = 50) }
+            val historyResult = withContext(Dispatchers.IO) { apiService.getRecommendationHistory(days = 90, limit = 200) }
             history = historyResult
+            // /recommendations/learnings is optional — backend may 404 it. If so,
+            // synthesise a learnings payload locally from the history+stats so
+            // the Signals tab still has actionable content.
+            learnings = try {
+                withContext(Dispatchers.IO) { apiService.getLearnings() }
+            } catch (e: Exception) {
+                android.util.Log.w("AiLearnings", "/recommendations/learnings unavailable (${e.message}); deriving locally")
+                LocalLearnings.derive(historyResult, statsResult)
+            }
         } catch (e: Exception) {
             errorMessage = e.message ?: "Failed to load AI data"
         } finally {
@@ -541,3 +550,608 @@ fun HistoryTab(history: List<RecommendationItem>) {
         item { Spacer(modifier = Modifier.height(16.dp)) }
     }
 }
+
+
+
+
+// ==========================================
+// LOCAL LEARNINGS DERIVATION
+// ==========================================
+/**
+ * The backend's /recommendations/learnings endpoint is not deployed (returns
+ * 404 as of May 2026). To keep the AI Learnings -> Signals tab actionable, we
+ * derive an equivalent payload client-side from the rich /recommendations/history
+ * data and the /recommendations/stats summary.
+ */
+object LocalLearnings {
+    fun derive(history: List<RecommendationItem>, stats: RecommendationStats?): LearningsResponse {
+        val tally = mutableMapOf<Pair<String, String>, IntArray>()
+
+        for (rec in history) {
+            val strategy = rec.strategy ?: continue
+            val signals = extractSignals(rec)
+            val outcomes = rec.outcomeHistory ?: continue
+            for (signal in signals) {
+                val key = signal to strategy
+                val arr = tally.getOrPut(key) { IntArray(3) }
+                for (o in outcomes) {
+                    when (o.status) {
+                        "winning" -> arr[0]++
+                        "losing" -> arr[1]++
+                        else -> arr[2]++
+                    }
+                }
+            }
+        }
+
+        val signalStats = tally.map { (k, v) ->
+            val total = v[0] + v[1] + v[2]
+            val winRate = if (total > 0) v[0] * 100.0 / total else 0.0
+            SignalStat(strategy = k.second, signal = k.first, winning = v[0], total = total, winRate = winRate)
+        }
+        val significant = signalStats.filter { it.total >= 6 }
+
+        val topWinning = significant.sortedByDescending { it.winRate }.filter { it.winRate >= 60.0 }.take(10)
+        val topLosing = significant.sortedBy { it.winRate }.filter { it.winRate < 50.0 }.take(10)
+
+        val suggested = mutableListOf<String>()
+        stats?.byStrategy?.forEach { (strat, s) ->
+            if (s.total >= 30 && s.winRate < 50.0) {
+                suggested += "Strategy '${strat.uppercase()}' has a ${"%.1f".format(s.winRate)}% win-rate over ${s.total} samples - raise its backtest / signal threshold."
+            }
+        }
+        stats?.byVerdict?.let { v ->
+            val buy = v["BUY"]
+            val strong = v["STRONG BUY"]
+            if (buy != null && strong != null && buy.total >= 50 && strong.total >= 50 &&
+                strong.winRate - buy.winRate >= 10.0
+            ) {
+                suggested += "STRONG BUY beats BUY by ${"%.0f".format(strong.winRate - buy.winRate)} pts - consider only acting on STRONG BUY tier."
+            }
+        }
+        if (topLosing.isNotEmpty()) {
+            val worst = topLosing.first()
+            suggested += "Worst signal: '${worst.signal}' on ${worst.strategy?.uppercase()} (${"%.0f".format(worst.winRate)}% over ${worst.total} obs)."
+        }
+        if (topWinning.isNotEmpty()) {
+            val best = topWinning.first()
+            suggested += "Best signal: '${best.signal}' on ${best.strategy?.uppercase()} (${"%.0f".format(best.winRate)}% over ${best.total} obs)."
+        }
+
+        return LearningsResponse(
+            enabled = true,
+            asOf = "Derived locally from history",
+            verdictBaselines = null,
+            topWinningSignals = topWinning,
+            topLosingSignals = topLosing,
+            suggestedAdjustments = suggested
+        )
+    }
+
+    private fun extractSignals(rec: RecommendationItem): List<String> {
+        val out = mutableListOf<String>()
+        val summary = rec.stockSummary?.lowercase() ?: ""
+
+        val rsiMatch = Regex("""rsi\s+(\d+)""").find(summary)
+        if (rsiMatch != null) {
+            val rsi = rsiMatch.groupValues[1].toIntOrNull()
+            if (rsi != null) {
+                out += when {
+                    rsi < 30 -> "RSI <30 (oversold)"
+                    rsi < 40 -> "RSI 30-40"
+                    rsi < 50 -> "RSI 40-50"
+                    rsi < 60 -> "RSI 50-60"
+                    rsi < 70 -> "RSI 60-70"
+                    else -> "RSI >=70 (overbought)"
+                }
+            }
+        }
+
+        when {
+            "uptrend" in summary -> out += "Trend: uptrend"
+            "downtrend" in summary -> out += "Trend: downtrend"
+            "sideways" in summary -> out += "Trend: sideways"
+        }
+
+        val ddMatch = Regex("""(\d+)%\s+off\s+high""").find(summary)
+        if (ddMatch != null) {
+            val dd = ddMatch.groupValues[1].toIntOrNull()
+            if (dd != null) {
+                out += when {
+                    dd < 5 -> "Near 52w high (<5% off)"
+                    dd < 15 -> "5-15% off high"
+                    dd < 30 -> "15-30% off high"
+                    else -> ">=30% off high"
+                }
+            }
+        }
+
+        val breadthMatch = Regex("""(\d+)\s+bullish\s+vs\s+(\d+)\s+bearish""").find(summary)
+        if (breadthMatch != null) {
+            val bull = breadthMatch.groupValues[1].toIntOrNull() ?: 0
+            val bear = breadthMatch.groupValues[2].toIntOrNull() ?: 0
+            val breadth = bull - bear
+            out += when {
+                breadth >= 5 -> "Breadth >=+5"
+                breadth >= 0 -> "Breadth 0..+5"
+                breadth >= -5 -> "Breadth -5..0"
+                else -> "Breadth <=-5"
+            }
+        }
+
+        rec.matchDetail?.let { md ->
+            val bt = md["bt"] as? String
+            if (bt != null) {
+                val pct = bt.replace("%", "").trim().toDoubleOrNull()
+                if (pct != null) {
+                    out += when {
+                        pct >= 95 -> "BT >=95%"
+                        pct >= 90 -> "BT 90-95%"
+                        pct >= 80 -> "BT 80-90%"
+                        else -> "BT <80%"
+                    }
+                }
+            }
+        }
+
+        return out
+    }
+}
+
+// ==========================================
+// ACCOUNT SCREEN — current login info + sign-out
+// ==========================================
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun AccountScreen(onBack: () -> Unit, onSignOut: () -> Unit) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val name = remember { GoogleAuthManager.getUserName(context) ?: "Unknown" }
+    val email = remember { GoogleAuthManager.getUserEmail(context) ?: "—" }
+    val photoUrl = remember { GoogleAuthManager.getUserPhoto(context) }
+    val userId = remember { GoogleAuthManager.getUserId(context) ?: "—" }
+    val isGuest = remember { userId.startsWith("guest-") }
+
+    var showSignOutConfirm by remember { mutableStateOf(false) }
+
+    if (showSignOutConfirm) {
+        AlertDialog(
+            onDismissRequest = { showSignOutConfirm = false },
+            title = { Text(if (isGuest) "Exit guest session?" else "Sign out?") },
+            text = {
+                Text(
+                    if (isGuest)
+                        "You'll be returned to the sign-in screen. Your watchlist and portfolio stay on the backend keyed to this guest id."
+                    else
+                        "You'll be returned to the sign-in screen. Your data is kept on the backend and will be available again when you sign back in with $email."
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    showSignOutConfirm = false
+                    onSignOut()
+                }) { Text("Sign out", color = Color(0xFFDC2626)) }
+            },
+            dismissButton = {
+                TextButton(onClick = { showSignOutConfirm = false }) { Text("Cancel") }
+            }
+        )
+    }
+
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text("Account") },
+                navigationIcon = {
+                    IconButton(onClick = onBack) {
+                        Icon(Icons.Default.ArrowBack, contentDescription = "Back")
+                    }
+                }
+            )
+        }
+    ) { padding ->
+        Column(
+            modifier = Modifier
+                .padding(padding)
+                .padding(20.dp)
+                .fillMaxSize(),
+            verticalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
+            // Profile card
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(containerColor = Color(0xFFEEF2FF)),
+                shape = RoundedCornerShape(16.dp)
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(20.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(16.dp)
+                ) {
+                    // Avatar — photo if available, else initial in a circle
+                    Box(
+                        modifier = Modifier
+                            .size(64.dp)
+                            .background(Color(0xFF4338CA), shape = androidx.compose.foundation.shape.CircleShape),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        if (!photoUrl.isNullOrBlank()) {
+                            // Coil/Glide isn't a current dependency — show initial as a
+                            // reliable fallback. (Photo URL is still surfaced below.)
+                            Text(
+                                text = name.take(1).uppercase(),
+                                color = Color.White,
+                                fontWeight = FontWeight.Bold,
+                                style = MaterialTheme.typography.headlineMedium
+                            )
+                        } else {
+                            Icon(
+                                Icons.Default.AccountCircle,
+                                contentDescription = null,
+                                tint = Color.White,
+                                modifier = Modifier.size(48.dp)
+                            )
+                        }
+                    }
+                    Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text(name, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
+                        if (!isGuest) {
+                            Text(email, style = MaterialTheme.typography.bodyMedium, color = Color(0xFF475569))
+                        }
+                        Surface(
+                            shape = RoundedCornerShape(6.dp),
+                            color = if (isGuest) Color(0xFFFEF3C7) else Color(0xFFDCFCE7)
+                        ) {
+                            Text(
+                                if (isGuest) "Guest session" else "Signed in with Google",
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = if (isGuest) Color(0xFF92400E) else Color(0xFF166534)
+                            )
+                        }
+                    }
+                }
+            }
+
+            // Details card
+            Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp)) {
+                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text("Account details", fontWeight = FontWeight.SemiBold, color = Color(0xFF334155))
+                    AccountRow(label = "Display name", value = name)
+                    if (!isGuest) AccountRow(label = "Email", value = email)
+                    AccountRow(label = "User ID", value = userId, mono = true)
+                    val configuredAi = remember { AiKeyManager.getConfiguredEngines(context) }
+                    AccountRow(
+                        label = "AI keys configured",
+                        value = if (configuredAi.isEmpty()) "None" else configuredAi.joinToString(", ")
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.weight(1f))
+
+            // Sign-out button
+            Button(
+                onClick = { showSignOutConfirm = true },
+                modifier = Modifier.fillMaxWidth(),
+                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFDC2626))
+            ) {
+                Icon(Icons.Default.ExitToApp, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(if (isGuest) "Exit guest session" else "Sign out")
+            }
+            Text(
+                "Signing out keeps your data safe on the backend; sign back in any time to restore it.",
+                style = MaterialTheme.typography.bodySmall,
+                color = Color(0xFF64748B),
+                textAlign = TextAlign.Center,
+                modifier = Modifier.fillMaxWidth()
+            )
+        }
+    }
+}
+
+@Composable
+private fun AccountRow(label: String, value: String, mono: Boolean = false) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.Top,
+        horizontalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        Text(
+            label,
+            modifier = Modifier.weight(0.4f),
+            color = Color(0xFF64748B),
+            style = MaterialTheme.typography.bodyMedium
+        )
+        Text(
+            value,
+            modifier = Modifier.weight(0.6f),
+            style = if (mono) MaterialTheme.typography.bodySmall else MaterialTheme.typography.bodyMedium,
+            color = Color(0xFF0F172A)
+        )
+    }
+}
+
+// ==========================================
+// GEMINI CHAT SCREEN — free-form follow-up Q&A
+// ==========================================
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun GeminiChatScreen(onBack: () -> Unit) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val scope = rememberCoroutineScope()
+    val keyConfigured = remember { GeminiChat.isEnabled(context) }
+
+    var input by remember { mutableStateOf("") }
+    val messages = remember { mutableStateListOf<GeminiChat.Message>() }
+    var sending by remember { mutableStateOf(false) }
+    var lastError by remember { mutableStateOf<String?>(null) }
+    var includeScanContext by remember { mutableStateOf(LastScanContext.results.isNotEmpty()) }
+
+    val listState = androidx.compose.foundation.lazy.rememberLazyListState()
+
+    // Auto-scroll to the newest message after each addition.
+    LaunchedEffect(messages.size, sending) {
+        val lastIdx = (messages.size - 1 + (if (sending) 1 else 0)).coerceAtLeast(0)
+        if (lastIdx > 0) listState.animateScrollToItem(lastIdx)
+    }
+
+    fun buildScanContext(): String? {
+        val results = LastScanContext.results
+        if (!includeScanContext || results.isEmpty()) return null
+        // Hand the model a compact view of the user's most recent scan so
+        // follow-ups like "tell me about NVDA" or "which is safest?" can
+        // reference real data instead of training-set memory.
+        val top = results.take(20)
+        val rows = top.joinToString("\n") { item ->
+            val rsi = item.rsi?.let { "%.0f".format(it) } ?: "?"
+            val rec = item.stockRecommendation ?: item.overall ?: "-"
+            val sec = item.sector?.takeIf { it.isNotBlank() } ?: "-"
+            val csp = item.csps?.firstOrNull()?.let { " csp:\$${"%.0f".format(it.strike)}@\$${"%.2f".format(it.premium)}" } ?: ""
+            val leap = item.longLeaps?.firstOrNull()?.let { " leap:\$${"%.0f".format(it.strike)} exp=${it.expiry}" } ?: ""
+            "${item.ticker} \$${"%.2f".format(item.price)} RSI=$rsi sec=$sec rec=$rec$csp$leap"
+        }
+        return """You are an in-app assistant for a retail options-trading app called StockWiz AI. The user has just run a scan; here are the top ${top.size} results (live data from the backend — do NOT invent prices or strikes from memory):
+
+$rows
+
+Answer the user's questions concisely. When they reference a ticker that's in the list above, ground your answer in those numbers. When they ask something outside the scan, say so. Keep replies under 150 words unless asked for detail."""
+    }
+
+    fun send() {
+        val text = input.trim()
+        if (text.isEmpty() || sending) return
+        input = ""
+        lastError = null
+        // Snapshot history BEFORE adding the new user turn (the API helper
+        // appends it server-side).
+        val historySnapshot = messages.toList()
+        messages.add(GeminiChat.Message(GeminiChat.Role.USER, text))
+        sending = true
+        scope.launch {
+            val reply = GeminiChat.ask(context, historySnapshot, text, systemContext = buildScanContext())
+            sending = false
+            when (reply) {
+                is GeminiChat.Reply.Ok -> messages.add(GeminiChat.Message(GeminiChat.Role.MODEL, reply.text))
+                is GeminiChat.Reply.Error -> lastError = reply.message
+                GeminiChat.Reply.NoKey -> lastError = "Gemini key not configured. Add it in the AI keys dialog on first launch."
+            }
+        }
+    }
+
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text("Ask Gemini") },
+                navigationIcon = {
+                    IconButton(onClick = onBack) {
+                        Icon(Icons.Default.ArrowBack, contentDescription = "Back")
+                    }
+                },
+                actions = {
+                    if (messages.isNotEmpty()) {
+                        TextButton(onClick = { messages.clear(); lastError = null }) {
+                            Text("Clear")
+                        }
+                    }
+                }
+            )
+        }
+    ) { padding ->
+        Column(
+            modifier = Modifier
+                .padding(padding)
+                .fillMaxSize()
+        ) {
+            // Context banner — shows whether scan results are being shared.
+            if (LastScanContext.results.isNotEmpty()) {
+                Surface(
+                    modifier = Modifier.fillMaxWidth(),
+                    color = if (includeScanContext) Color(0xFFEFF6FF) else Color(0xFFF1F5F9)
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            if (includeScanContext) Icons.Default.Link else Icons.Default.LinkOff,
+                            contentDescription = null,
+                            tint = if (includeScanContext) Color(0xFF2563EB) else Color(0xFF64748B),
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            if (includeScanContext)
+                                "Sharing your last scan (${LastScanContext.results.size.coerceAtMost(20)} tickers) with Gemini"
+                            else
+                                "Scan context off — Gemini answers from general knowledge only",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = Color(0xFF334155),
+                            modifier = Modifier.weight(1f)
+                        )
+                        Switch(
+                            checked = includeScanContext,
+                            onCheckedChange = { includeScanContext = it }
+                        )
+                    }
+                }
+            }
+
+            // Message list
+            if (messages.isEmpty() && !sending) {
+                Column(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth()
+                        .padding(24.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center
+                ) {
+                    Icon(Icons.Default.Chat, contentDescription = null, tint = Color(0xFF93C5FD), modifier = Modifier.size(64.dp))
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Text(
+                        if (keyConfigured) "Ask Gemini anything" else "Add your Gemini API key to chat",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        color = Color(0xFF334155)
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(
+                        if (keyConfigured)
+                            "Try: \"Explain CSPs in plain English\", \"Which of my picks has the best risk/reward?\", or \"How do I roll a losing position?\""
+                        else
+                            "Open the More menu → first-launch AI keys prompt to paste your Gemini key.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = Color(0xFF64748B),
+                        textAlign = TextAlign.Center
+                    )
+                }
+            } else {
+                LazyColumn(
+                    state = listState,
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth(),
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 12.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    items(messages) { msg -> ChatBubble(msg) }
+                    if (sending) item { TypingIndicator() }
+                }
+            }
+
+            // Error banner
+            lastError?.let { err ->
+                Surface(
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),
+                    color = Color(0xFFFEE2E2),
+                    shape = RoundedCornerShape(8.dp)
+                ) {
+                    Text(
+                        "Gemini error: $err",
+                        modifier = Modifier.padding(12.dp),
+                        color = Color(0xFF991B1B),
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                }
+            }
+
+            // Input bar
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shadowElevation = 4.dp,
+                color = MaterialTheme.colorScheme.surface
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    OutlinedTextField(
+                        value = input,
+                        onValueChange = { input = it },
+                        modifier = Modifier.weight(1f),
+                        placeholder = { Text("Ask anything…") },
+                        enabled = !sending && keyConfigured,
+                        maxLines = 4,
+                        shape = RoundedCornerShape(20.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    FilledIconButton(
+                        onClick = ::send,
+                        enabled = input.isNotBlank() && !sending && keyConfigured,
+                        colors = IconButtonDefaults.filledIconButtonColors(containerColor = Color(0xFF2563EB))
+                    ) {
+                        if (sending) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(20.dp),
+                                strokeWidth = 2.dp,
+                                color = Color.White
+                            )
+                        } else {
+                            Icon(Icons.Default.Send, contentDescription = "Send", tint = Color.White)
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ChatBubble(msg: GeminiChat.Message) {
+    val isUser = msg.role == GeminiChat.Role.USER
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = if (isUser) Arrangement.End else Arrangement.Start
+    ) {
+        Surface(
+            color = if (isUser) Color(0xFF2563EB) else Color(0xFFF1F5F9),
+            shape = RoundedCornerShape(
+                topStart = 16.dp, topEnd = 16.dp,
+                bottomStart = if (isUser) 16.dp else 4.dp,
+                bottomEnd = if (isUser) 4.dp else 16.dp
+            ),
+            modifier = Modifier.widthIn(max = 320.dp)
+        ) {
+            Text(
+                msg.text,
+                modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+                color = if (isUser) Color.White else Color(0xFF0F172A),
+                style = MaterialTheme.typography.bodyMedium
+            )
+        }
+    }
+}
+
+@Composable
+private fun TypingIndicator() {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.Start
+    ) {
+        Surface(
+            color = Color(0xFFF1F5F9),
+            shape = RoundedCornerShape(16.dp)
+        ) {
+            Row(
+                modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(14.dp),
+                    strokeWidth = 2.dp,
+                    color = Color(0xFF2563EB)
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text("Gemini is thinking…", color = Color(0xFF64748B), style = MaterialTheme.typography.bodySmall)
+            }
+        }
+    }
+}
+
+
+

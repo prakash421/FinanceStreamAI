@@ -9,4 +9,10 @@
     <include domain="sharedpref" path="PortfolioCache.xml"/>
     <include domain="sharedpref" path="FinanceStreamPrefs.xml"/>
     <include domain="sharedpref" path="NotificationHistory.xml"/>
+    <!-- Lightly-obfuscated mirror of user-supplied AI API keys so they
+         survive uninstall/reinstall via Auto Backup. The encrypted
+         keystore-backed copy (ai_api_keys_encrypted.xml) is intentionally
+         NOT included because its master key is keystore-bound and cannot
+         be restored on another install/device. -->
+    <include domain="sharedpref" path="ai_keys_backup.xml"/>
 </full-backup-content>

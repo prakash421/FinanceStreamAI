@@ -9,10 +9,13 @@
         <include domain="sharedpref" path="PortfolioCache.xml"/>
         <include domain="sharedpref" path="FinanceStreamPrefs.xml"/>
         <include domain="sharedpref" path="NotificationHistory.xml"/>
+        <!-- AI API keys (lightly-obfuscated mirror) — see AiKeyManager. -->
+        <include domain="sharedpref" path="ai_keys_backup.xml"/>
     </cloud-backup>
     <device-transfer>
         <include domain="sharedpref" path="PortfolioCache.xml"/>
         <include domain="sharedpref" path="FinanceStreamPrefs.xml"/>
         <include domain="sharedpref" path="NotificationHistory.xml"/>
+        <include domain="sharedpref" path="ai_keys_backup.xml"/>
     </device-transfer>
 </data-extraction-rules>

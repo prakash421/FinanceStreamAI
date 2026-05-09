@@ -1,11 +1,22 @@
 package com.example.financestreamai
 
+import android.Manifest
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
 import android.content.Context
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import android.util.Log
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.app.NotificationCompat
+import androidx.core.app.NotificationManagerCompat
+import androidx.core.content.ContextCompat
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
@@ -51,6 +62,7 @@ import com.google.gson.stream.JsonToken
 import com.google.gson.stream.JsonWriter
 import com.google.gson.reflect.TypeToken
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -67,6 +79,8 @@ import java.net.UnknownHostException
 import java.util.Calendar
 import java.util.concurrent.TimeUnit
 import androidx.work.ExistingPeriodicWorkPolicy
+import androidx.work.ExistingWorkPolicy
+import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.Constraints
@@ -321,7 +335,9 @@ data class RecommendationItem(
     @SerializedName("closed") val closed: Boolean = false,
     @SerializedName("eval_count") val evalCount: Int? = null,
     @SerializedName("final_status") val finalStatus: String? = null,
-    @SerializedName("outcome_history") val outcomeHistory: List<OutcomeEntry>? = null
+    @SerializedName("outcome_history") val outcomeHistory: List<OutcomeEntry>? = null,
+    @SerializedName("stock_summary") val stockSummary: String? = null,
+    @SerializedName("match_detail") val matchDetail: Map<String, Any?>? = null
 )
 
 data class OutcomeEntry(
@@ -510,6 +526,17 @@ object UserSession {
     var userId: String? = null
 }
 
+/**
+ * In-memory holder for the most recent scan results so the Gemini chat
+ * screen can use them as conversation context without re-fetching from the
+ * backend. Updated by [ScanScreen] every time a scan completes; cleared
+ * implicitly on process death (which is fine — chat just opens with no
+ * context until the next scan).
+ */
+object LastScanContext {
+    @Volatile var results: List<ScanResultItem> = emptyList()
+}
+
 private val authInterceptor = Interceptor { chain ->
     val requestBuilder = chain.request().newBuilder()
     UserSession.userId?.let { uid ->
@@ -578,6 +605,112 @@ private fun friendlyErrorMessage(e: Exception): String {
         is java.io.IOException -> "Connection lost. Please check your network and try again."
         else -> e.message ?: "An unexpected error occurred. Please try again."
     }
+}
+
+/**
+ * Merge two backtest responses (long-call BUY + CSP SELL on a shared expiry)
+ * into a single synthetic verdict for the CSP-Funded Call combo.
+ *
+ * Verdict logic:
+ *   - both legs return STRONG (BUY for the call, SELL for the put) -> STRONG BUY
+ *   - both legs return positive (BUY + SELL)                       -> BUY
+ *   - one leg negative                                              -> HOLD
+ *   - both legs negative or missing                                 -> AVOID
+ *
+ * Confidence is the lower of the two leg confidences (or "Low" if one is missing).
+ *
+ * Net debit = call premium - put premium (per share). When the put premium
+ * fully covers the call, the position opens at zero or negative cost — that
+ * fact is the headline of the summary.
+ */
+internal fun mergeCfComboResponses(
+    callRes: BacktestResponse?,
+    putRes: BacktestResponse?,
+    callStrike: Double,
+    putStrike: Double,
+    callPrem: Double,
+    putPrem: Double,
+    expiry: String
+): BacktestResponse {
+    fun tier(verdict: String?, isSell: Boolean): Int {
+        val v = verdict?.uppercase() ?: return -2
+        return when {
+            isSell && v.contains("STRONG SELL") -> 2
+            isSell && v.contains("SELL") -> 1
+            !isSell && v.contains("STRONG BUY") -> 2
+            !isSell && v.contains("BUY") -> 1
+            v.contains("HOLD") -> 0
+            else -> -1
+        }
+    }
+    val callTier = tier(callRes?.verdict, isSell = false)
+    val putTier = tier(putRes?.verdict, isSell = true)
+
+    val mergedVerdict = when {
+        callTier >= 2 && putTier >= 2 -> "STRONG BUY"
+        callTier >= 1 && putTier >= 1 -> "BUY"
+        callTier <= -1 && putTier <= -1 -> "AVOID"
+        callTier <= 0 || putTier <= 0 -> "HOLD"
+        else -> "HOLD"
+    }
+    val rank = mapOf("High" to 3, "Medium" to 2, "Low" to 1, "None" to 0)
+    val cConf = callRes?.confidence ?: "None"
+    val pConf = putRes?.confidence ?: "None"
+    val mergedConfidence = if ((rank[cConf] ?: 0) <= (rank[pConf] ?: 0)) cConf else pConf
+
+    val netDebitPerShare = callPrem - putPrem
+    val netDebitContract = netDebitPerShare * 100.0
+    val coveragePct = if (callPrem > 0) (putPrem / callPrem * 100.0).coerceAtMost(999.0) else 0.0
+    val maxLossPerShare = putStrike - putPrem + maxOf(0.0, netDebitPerShare)
+
+    val summaryHeader = buildString {
+        append("CSP-Funded Call combo · exp $expiry · ")
+        append("BUY \$${"%.2f".format(callStrike)} call @ \$${"%.2f".format(callPrem)} · ")
+        append("SELL \$${"%.2f".format(putStrike)} put @ \$${"%.2f".format(putPrem)}")
+    }
+    val economics = buildString {
+        append("Net debit ≈ \$${"%.2f".format(netDebitPerShare)}/share ")
+        append("(\$${"%.0f".format(netDebitContract)}/contract). ")
+        append("Put premium covers ${"%.0f".format(coveragePct)}% of call cost. ")
+        append("Max loss if assigned ≈ \$${"%.2f".format(maxLossPerShare)}/share at put strike.")
+    }
+    val mergedSummary = buildString {
+        append(summaryHeader)
+        append("\n\n")
+        append(economics)
+        callRes?.summary?.takeIf { it.isNotBlank() }?.let { append("\n\nCall leg: ").append(it) }
+        putRes?.summary?.takeIf { it.isNotBlank() }?.let { append("\n\nPut leg: ").append(it) }
+    }
+
+    val signals = buildList<String> {
+        if (netDebitPerShare <= 0) add("Self-funded combo (put premium ≥ call cost)")
+        if (coveragePct >= 50) add("Put premium covers ${"%.0f".format(coveragePct)}% of call debit")
+        callRes?.signals?.forEach { add("Call: $it") }
+        putRes?.signals?.forEach { add("Put: $it") }
+    }
+    val warnings = buildList<String> {
+        if (callTier <= 0) add("Long call leg backtest is weak (verdict: ${callRes?.verdict ?: "N/A"})")
+        if (putTier <= 0) add("CSP leg backtest is weak (verdict: ${putRes?.verdict ?: "N/A"})")
+        if (putStrike >= callStrike) add("Put strike should be below call strike for this combo")
+        callRes?.warnings?.forEach { add("Call: $it") }
+        putRes?.warnings?.forEach { add("Put: $it") }
+    }
+
+    return BacktestResponse(
+        verdict = mergedVerdict,
+        confidence = mergedConfidence,
+        summary = mergedSummary,
+        backtestScore = listOfNotNull(
+            callRes?.backtestScore?.let { "Call BT $it" },
+            putRes?.backtestScore?.let { "Put BT $it" }
+        ).joinToString(" · ").ifBlank { null },
+        price = callRes?.price ?: putRes?.price,
+        rsi = callRes?.rsi ?: putRes?.rsi,
+        signals = signals,
+        warnings = warnings,
+        levels = callRes?.levels ?: putRes?.levels,
+        learning = null
+    )
 }
 
 // Helper to translate Credential Manager exceptions into actionable messages.
@@ -777,6 +910,376 @@ object NotificationCache {
         return try {
             gson.fromJson(json, object : TypeToken<List<NotificationRecord>>() {}.type)
         } catch (_: Exception) { emptyList() }
+    }
+}
+
+// ==========================================
+// TRENDING ACTIONABLE-ALERT HELPERS
+// ==========================================
+/**
+ * Filters the trending-stocks dump down to actionable items and posts a
+ * pop-up notification.
+ *
+ * STRATEGY (revised May 2026):
+ * Trending names are momentum plays — selling cash-secured puts caps your
+ * upside on a stock that's running. Instead, surface two more aligned
+ * tactics for each pick:
+ *
+ *   1) **4-8 week long call** — capture the move with leverage. We pick the
+ *      long-call entry (`long_leaps` payload) whose expiry falls in the
+ *      28-63 day window (or the nearest if none in window).
+ *   2) **~40Δ CSP for premium harvest, then use the premium to buy that
+ *      call.** A 40-delta put writes more premium than a 25Δ put, and the
+ *      cash funds the long-call leg — net debit drops while you keep
+ *      directional exposure. We pick the CSP entry whose |delta| is closest
+ *      to 0.40 (band 0.30-0.50).
+ *
+ * If neither leg is available the item is dropped from the actionable list.
+ */
+object TrendingAlerts {
+    private const val CHANNEL_ID = "trending_alerts"
+    private const val CHANNEL_NAME = "Trending Stock Alerts"
+    private const val NOTIFICATION_ID = 9003
+    private const val MAX_ACTIONABLE = 5
+
+    private const val MIN_CALL_DAYS = 28      // 4 weeks
+    private const val MAX_CALL_DAYS = 63      // 9 weeks (gives a small overshoot for liquidity)
+    private const val PREFERRED_CSP_DELTA = 0.40
+    private const val MIN_CSP_DELTA = 0.30
+    private const val MAX_CSP_DELTA = 0.50
+
+    // CSP-Funded Call combo (high-IV trending only)
+    // Selling a 6-8wk CSP and using its premium to buy a same-expiry call gives
+    // a near-zero-cost long synthetic on the underlying. Only worth doing when
+    // implied volatility is rich enough that the put premium is meaningful.
+    private const val MIN_IV_RANK_FOR_COMBO = 35.0   // %
+    private const val MIN_COMBO_DAYS = 28
+    private const val MAX_COMBO_DAYS = 70
+    private const val MIN_COMBO_CSP_DELTA = 0.20
+    private const val MAX_COMBO_CSP_DELTA = 0.45
+
+    /** Pick the best long call in the 4-8 week window. Returns null if no
+     *  call entry has an expiry inside that window. (We deliberately do NOT
+     *  fall back to LEAPS here — the backend's `long_leaps` array is filled
+     *  with 1-2 year out contracts, and labelling a 89-week LEAP as a
+     *  "near-term momentum call" is misleading.) */
+    private fun pickNearTermCall(item: ScanResultItem): LongLeapsResult? {
+        val leaps = item.longLeaps?.takeIf { it.isNotEmpty() } ?: return null
+        val today = java.time.LocalDate.now()
+        val withDays = leaps.mapNotNull { l ->
+            val d = parseExpiryDays(l.expiry, today) ?: return@mapNotNull null
+            l to d
+        }
+        val inWindow = withDays.filter { it.second in MIN_CALL_DAYS..MAX_CALL_DAYS }
+        if (inWindow.isEmpty()) return null
+        // Best bt% among in-window calls
+        return inWindow.maxByOrNull { parseBt(it.first.bt) }?.first
+    }
+
+    /** Pick the best LEAPS-style long call (>= 6 months out) for items where
+     *  no near-term call is offered. Returns null if there are no leaps. */
+    private fun pickLeapsCall(item: ScanResultItem): LongLeapsResult? {
+        val leaps = item.longLeaps?.takeIf { it.isNotEmpty() } ?: return null
+        val today = java.time.LocalDate.now()
+        val withDays = leaps.mapNotNull { l ->
+            val d = parseExpiryDays(l.expiry, today) ?: return@mapNotNull null
+            l to d
+        }
+        // Prefer the highest bt%; tie-break on shortest expiry (less time decay risk).
+        return withDays.maxWithOrNull(
+            compareBy<Pair<LongLeapsResult, Int>>({ parseBt(it.first.bt) }, { -it.second })
+        )?.first
+    }
+
+    /** Pick the CSP whose |delta| is closest to ~0.40 (band 0.30-0.50). */
+    private fun pickPremiumHarvestCsp(item: ScanResultItem): CspResult? {
+        val csps = item.csps?.takeIf { it.isNotEmpty() } ?: return null
+        return csps
+            .filter { kotlin.math.abs(it.delta) in MIN_CSP_DELTA..MAX_CSP_DELTA }
+            .minByOrNull { kotlin.math.abs(kotlin.math.abs(it.delta) - PREFERRED_CSP_DELTA) }
+            ?: csps.minByOrNull { kotlin.math.abs(kotlin.math.abs(it.delta) - PREFERRED_CSP_DELTA) }
+    }
+
+    /**
+     * Pick a CSP suitable for the CSP-Funded Call combo.
+     *
+     * The combo: sell a 6-8wk CSP, take the premium, immediately buy a
+     * same-expiry call (near ATM) with that cash. Result: a near-zero-cost
+     * synthetic-long position with capped tail risk (the put strike).
+     *
+     * Only worth doing when:
+     *  - IV rank >= 35% (otherwise the put premium is too thin to fund a call)
+     *  - CSP expiry falls in the 28-70 day window (so the call we'll pair
+     *    with is also a short-dated 6-8wk contract, not a LEAP)
+     *  - CSP |delta| in 0.20-0.45 (out-of-the-money but not too far)
+     *
+     * Returns null when the trade isn't well-formed; caller should treat
+     * null as "do not surface the combo line".
+     */
+    private fun pickComboCsp(item: ScanResultItem): CspResult? {
+        val ivRank = parseIvRank(item.ivRank) ?: return null
+        if (ivRank < MIN_IV_RANK_FOR_COMBO) return null
+        val csps = item.csps?.takeIf { it.isNotEmpty() } ?: return null
+        val today = java.time.LocalDate.now()
+        return csps
+            .filter { csp ->
+                val days = parseExpiryDays(csp.expiry, today) ?: return@filter false
+                val absDelta = kotlin.math.abs(csp.delta)
+                days in MIN_COMBO_DAYS..MAX_COMBO_DAYS &&
+                    absDelta in MIN_COMBO_CSP_DELTA..MAX_COMBO_CSP_DELTA
+            }
+            .maxByOrNull { it.premium }   // richest premium = best funding for the call leg
+    }
+
+    private fun parseIvRank(s: String?): Double? =
+        s?.replace("%", "")?.trim()?.toDoubleOrNull()
+
+    private fun parseExpiryDays(expiry: String?, today: java.time.LocalDate): Int? {
+        if (expiry.isNullOrBlank()) return null
+        val rx = """(\d{4})-(\d{2})-(\d{2})""".toRegex()
+        val m = rx.find(expiry) ?: return null
+        return try {
+            val (y, mo, d) = m.destructured
+            val exp = java.time.LocalDate.of(y.toInt(), mo.toInt(), d.toInt())
+            java.time.temporal.ChronoUnit.DAYS.between(today, exp).toInt()
+        } catch (_: Exception) { null }
+    }
+
+    private fun parseBt(bt: String?): Double = bt?.replace("%", "")?.trim()?.toDoubleOrNull() ?: 0.0
+
+    /** A trending result is actionable when:
+     *  - recommendation is bullish and not stretched (RSI 28..78), AND
+     *  - we have at least one of: a near-term call, a LEAP, or a 30-50Δ CSP.
+     *  Each available leg is surfaced individually with full strike + expiry
+     *  + premium so the user can place the trade without guessing. */
+    fun isActionable(item: ScanResultItem): Boolean {
+        val rec = (item.stockRecommendation ?: item.overall ?: "").uppercase()
+        if (rec.contains("SELL") || rec.contains("AVOID")) return false
+        if (!rec.contains("BUY") && !rec.contains("STRONG")) return false
+        val rsi = item.rsi ?: 50.0
+        if (rsi >= 78 || rsi <= 28) return false
+        return pickNearTermCall(item) != null ||
+            pickLeapsCall(item) != null ||
+            pickPremiumHarvestCsp(item) != null ||
+            pickComboCsp(item) != null
+    }
+
+    /** Composite score: prefers strong recs + bullish signals + analyst upside + healthy RSI. */
+    private fun score(item: ScanResultItem): Double {
+        val rec = (item.stockRecommendation ?: item.overall ?: "").uppercase()
+        val recScore = when {
+            rec.contains("STRONG BUY") -> 30.0
+            rec.contains("BUY") -> 15.0
+            else -> 0.0
+        }
+        val rsi = item.rsi ?: 50.0
+        val rsiScore = when {
+            rsi in 45.0..65.0 -> 15.0
+            rsi in 35.0..70.0 -> 8.0
+            else -> 0.0
+        }
+        val signals = ((item.bullishSignals?.size ?: 0) - (item.bearishSignals?.size ?: 0)).toDouble().coerceIn(-5.0, 15.0)
+        val upside = (item.analystTarget?.upsidePct ?: 0.0).coerceIn(0.0, 30.0)
+        val change = (item.changePercent ?: 0.0).coerceIn(-10.0, 10.0)
+        return recScore + rsiScore + signals + upside + change
+    }
+
+    fun pickActionable(results: List<ScanResultItem>): List<ScanResultItem> =
+        results.filter { isActionable(it) }
+            .sortedByDescending { score(it) }
+            .take(MAX_ACTIONABLE)
+
+    /**
+     * Tenor label for a contract's days-to-expiry.
+     *  <  90d  -> "Nwk"   (short term)
+     *  < 365d  -> "Nmo"   (medium term)
+     *  >=365d  -> "LEAP"  (long term)
+     */
+    private fun tenorLabel(days: Int?): String {
+        if (days == null) return ""
+        return when {
+            days < 90 -> "${(days / 7.0).let { "%.0f".format(it) }}wk"
+            days < 365 -> "${(days / 30.0).let { "%.0f".format(it) }}mo"
+            else -> "LEAP"
+        }
+    }
+
+    /**
+     * Headline lines for an actionable trending item. Every line ALWAYS
+     * carries: expiry date, strike, and premium per share. We surface up to
+     * three independent legs (near-term call, LEAPS, and 40Δ CSP funding)
+     * — each is a self-contained trade idea, not a fabricated combo.
+     */
+    private fun strategyLines(item: ScanResultItem): List<String> {
+        val out = mutableListOf<String>()
+        val today = java.time.LocalDate.now()
+        val nearCall = pickNearTermCall(item)
+        val leapCall = if (nearCall == null) pickLeapsCall(item) else null
+        val csp = pickPremiumHarvestCsp(item)
+
+        if (nearCall != null) {
+            val days = parseExpiryDays(nearCall.expiry, today)
+            val tenor = tenorLabel(days)
+            val expiry = nearCall.expiry.formatDate()
+            val deltaStr = "Δ%.2f".format(nearCall.delta)
+            out += "BUY $tenor Call \$${nearCall.strike} exp $expiry @ \$${"%.2f".format(nearCall.premium)} ($deltaStr)"
+        } else if (leapCall != null) {
+            // No 4-8wk call available — surface the LEAP honestly labelled.
+            val days = parseExpiryDays(leapCall.expiry, today)
+            val tenor = tenorLabel(days)
+            val expiry = leapCall.expiry.formatDate()
+            val deltaStr = "Δ%.2f".format(leapCall.delta)
+            val lev = leapCall.leverage?.let { ", lev $it" } ?: ""
+            out += "BUY $tenor Call \$${leapCall.strike} exp $expiry @ \$${"%.2f".format(leapCall.premium)} ($deltaStr$lev)"
+        }
+
+        if (csp != null) {
+            val deltaStr = "%.2f".format(kotlin.math.abs(csp.delta))
+            val expiry = csp.expiry?.formatDate() ?: "near-term"
+            val premium = "\$${"%.2f".format(csp.premium)}"
+            // If we have a call leg, show how much of its debit the CSP covers.
+            val anyCall = nearCall ?: leapCall
+            val coverage = if (anyCall != null && anyCall.premium > 0) {
+                val pct = (csp.premium / anyCall.premium * 100.0).coerceAtMost(999.0)
+                " — covers ${"%.0f".format(pct)}% of call debit"
+            } else ""
+            val tag = if (anyCall != null) "fund the call" else "premium harvest"
+            out += "SELL ${deltaStr}Δ CSP \$${csp.strike} exp $expiry @ $premium ($tag$coverage)"
+        }
+
+        // CSP-Funded Call combo (high-IV only) — sell a 6-8wk CSP and use
+        // the premium to buy a same-expiry call. Near-zero-cost synthetic long.
+        val comboCsp = pickComboCsp(item)
+        if (comboCsp != null) {
+            val ivRank = parseIvRank(item.ivRank)
+            val ivStr = ivRank?.let { " IV-rank ${"%.0f".format(it)}%" } ?: ""
+            val deltaStr = "%.2f".format(kotlin.math.abs(comboCsp.delta))
+            val expiry = comboCsp.expiry?.formatDate() ?: "near-term"
+            val cashPerContract = comboCsp.premium * 100.0
+            // Suggest an ATM call strike near the current underlying price (rounded to nearest $5).
+            val callStrikeHint = (kotlin.math.round(item.price / 5.0) * 5.0)
+            out += "CFC COMBO: SELL ${deltaStr}Δ CSP \$${comboCsp.strike} exp $expiry @ \$${"%.2f".format(comboCsp.premium)}$ivStr"
+            out += "  └ use \$${"%.0f".format(cashPerContract)}/contract to BUY same-expiry ~\$${"%.0f".format(callStrikeHint)} call (target net debit ≈ 0)"
+        }
+
+        item.analystTarget?.upsidePct?.takeIf { it > 0 }?.let {
+            out += "Analyst upside +%.0f%%".format(it)
+        }
+        return out
+    }
+
+    private fun reasoning(item: ScanResultItem): String {
+        val parts = mutableListOf<String>()
+        item.rsi?.let { parts += "RSI ${"%.0f".format(it)}" }
+        val sma50 = item.sma50; val sma200 = item.sma200
+        if (sma50 != null && sma200 != null) {
+            val golden = sma50 >= sma200
+            parts += if (golden && item.price >= sma50) "above SMA50/200" else "MA: mixed"
+        }
+        item.bullishSignals?.firstOrNull()?.let { parts += it }
+        item.sector?.takeIf { it.isNotBlank() }?.let { parts += it }
+        return parts.take(4).joinToString(" \u2022 ")
+    }
+
+    /**
+     * Filters [results], persists & shows a pop-up notification for the top
+     * actionable picks, and returns the filtered list so the caller can also
+     * render it inline. If no items pass the filter, no notification is sent.
+     */
+    fun postActionableAlert(context: Context, results: List<ScanResultItem>): List<ScanResultItem> {
+        val picks = pickActionable(results)
+        return postActionableAlertInternal(context, picks, vetoedTickers = emptyList(), gateApplied = false)
+    }
+
+    /**
+     * Suspend variant that runs every actionable pick through the Gemini gate
+     * BEFORE posting the notification. Vetoed tickers are dropped; if the
+     * Gemini key is missing the gate fails open and behaviour matches the
+     * non-suspend overload above. Use this from a coroutine when you want
+     * Gemini to act as the final filter on what reaches the user.
+     */
+    suspend fun postActionableAlertGated(
+        context: Context,
+        results: List<ScanResultItem>
+    ): List<ScanResultItem> {
+        val picks = pickActionable(results)
+        if (picks.isEmpty()) return emptyList()
+        val gate = if (GeminiGate.isEnabled(context)) {
+            GeminiGate.gateAll(context, picks)
+        } else emptyMap()
+        val approved = picks.filter { gate[it.ticker.uppercase()]?.vetoed != true }
+        val vetoed = gate.values.filter { it.vetoed }.map { it.ticker }
+        if (vetoed.isNotEmpty()) {
+            android.util.Log.i("TrendingAlerts", "Gemini vetoed ${vetoed.size} trending picks: $vetoed")
+        }
+        return postActionableAlertInternal(
+            context, approved,
+            vetoedTickers = vetoed,
+            gateApplied = gate.isNotEmpty()
+        )
+    }
+
+    private fun postActionableAlertInternal(
+        context: Context,
+        picks: List<ScanResultItem>,
+        vetoedTickers: List<String>,
+        gateApplied: Boolean
+    ): List<ScanResultItem> {
+        if (picks.isEmpty()) return emptyList()
+
+        val title = "\ud83d\udd25 Trending Momentum \u2014 ${picks.size} call idea${if (picks.size > 1) "s" else ""}"
+        val sb = StringBuilder()
+        picks.forEach { item ->
+            val change = item.changePercent?.let { " %+.1f%%".format(it) } ?: ""
+            sb.appendLine("\u25b6 ${item.ticker} \$${"%.2f".format(item.price)}$change")
+            strategyLines(item).forEach { sb.appendLine("    $it") }
+            val r = reasoning(item)
+            if (r.isNotBlank()) sb.appendLine("    $r")
+        }
+        if (gateApplied) {
+            sb.append("\n\ud83d\udd0d Gemini gate: ")
+            if (vetoedTickers.isEmpty()) sb.append("all picks approved.")
+            else sb.append("vetoed ${vetoedTickers.size} \u2014 ${vetoedTickers.joinToString(", ")}")
+        }
+        val body = sb.toString().trim()
+
+        NotificationCache.save(context, title, body)
+
+        // Permission / OS-level guards
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            val granted = ContextCompat.checkSelfPermission(
+                context, Manifest.permission.POST_NOTIFICATIONS
+            ) == PackageManager.PERMISSION_GRANTED
+            if (!granted) return picks
+        }
+        if (!NotificationManagerCompat.from(context).areNotificationsEnabled()) return picks
+
+        val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val ch = NotificationChannel(CHANNEL_ID, CHANNEL_NAME, NotificationManager.IMPORTANCE_HIGH).apply {
+                description = "Momentum-aligned ideas (4-8wk calls + 40Δ CSP funding) from the trending scan"
+            }
+            nm.createNotificationChannel(ch)
+        }
+        val intent = Intent(context, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            putExtra("navigate_to", "notifications")
+        }
+        val pi = PendingIntent.getActivity(
+            context, 2, intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        val n = NotificationCompat.Builder(context, CHANNEL_ID)
+            .setSmallIcon(android.R.drawable.ic_dialog_info)
+            .setContentTitle(title)
+            .setContentText(body.lines().first())
+            .setStyle(NotificationCompat.BigTextStyle().bigText(body))
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setContentIntent(pi)
+            .setAutoCancel(true)
+            .build()
+        nm.notify(NOTIFICATION_ID, n)
+        return picks
     }
 }
 
@@ -986,8 +1489,25 @@ fun AiCrossValidationBadge(validation: AiCrossValidation?) {
 // 4. MAIN ACTIVITY & UI
 // ==========================================
 class MainActivity : ComponentActivity() {
+
+    private val notificationPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) {
+            Log.d("MainActivity", "POST_NOTIFICATIONS granted by user")
+        } else {
+            Log.w("MainActivity", "POST_NOTIFICATIONS denied — notifications will be silently dropped by the system")
+            Toast.makeText(
+                this,
+                "Notifications are disabled. Enable them in system settings to receive daily picks.",
+                Toast.LENGTH_LONG
+            ).show()
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        ensureNotificationPermission()
         scheduleDailyRecommendations()
         schedulePortfolioFlipScan()
         // Pre-warm: wake up Render backend so it's ready when user scans
@@ -1005,7 +1525,13 @@ class MainActivity : ComponentActivity() {
                 Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
                     var signedIn by remember { mutableStateOf(isSignedIn) }
                     if (signedIn) {
-                        MainScreen(startTab = startTab)
+                        MainScreen(
+                            startTab = startTab,
+                            onSignOut = {
+                                GoogleAuthManager.signOut(this@MainActivity)
+                                signedIn = false
+                            }
+                        )
                     } else {
                         GoogleSignInScreen(onSignInSuccess = { signedIn = true })
                     }
@@ -1014,14 +1540,25 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun ensureNotificationPermission() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return // Auto-granted pre-Android 13
+        val granted = ContextCompat.checkSelfPermission(
+            this,
+            Manifest.permission.POST_NOTIFICATIONS
+        ) == PackageManager.PERMISSION_GRANTED
+        if (!granted) {
+            notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
+    }
+
     private fun scheduleDailyRecommendations() {
         val now = Calendar.getInstance()
         val target = Calendar.getInstance().apply {
             set(Calendar.HOUR_OF_DAY, 6)
-            set(Calendar.MINUTE, 50)
+            set(Calendar.MINUTE, 45)
             set(Calendar.SECOND, 0)
             set(Calendar.MILLISECOND, 0)
-            // If 6:50am already passed today, schedule for tomorrow
+            // If 6:45am already passed today, schedule for tomorrow
             if (before(now)) add(Calendar.DAY_OF_MONTH, 1)
         }
         val initialDelayMs = target.timeInMillis - now.timeInMillis
@@ -1216,7 +1753,7 @@ fun GoogleSignInScreen(onSignInSuccess: () -> Unit) {
 }
 
 @Composable
-fun MainScreen(startTab: Int = 0) {
+fun MainScreen(startTab: Int = 0, onSignOut: () -> Unit = {}) {
     var selectedTab by remember { mutableIntStateOf(startTab) }
     var subScreen by remember { mutableStateOf<String?>(null) }
     val keyboardController = LocalSoftwareKeyboardController.current
@@ -1331,6 +1868,11 @@ fun MainScreen(startTab: Int = 0) {
         when (subScreen) {
             "sector_rotation" -> SectorRotationScreen(onBack = { subScreen = null })
             "ai_learnings" -> AiLearningsScreen(onBack = { subScreen = null })
+            "account" -> AccountScreen(
+                onBack = { subScreen = null },
+                onSignOut = { subScreen = null; onSignOut() }
+            )
+            "gemini_chat" -> GeminiChatScreen(onBack = { subScreen = null })
         }
         return
     }
@@ -1425,6 +1967,24 @@ fun MainScreen(startTab: Int = 0) {
                                     },
                                     onClick = { showMoreMenu = false; subScreen = "ai_learnings" }
                                 )
+                                DropdownMenuItem(
+                                    text = {
+                                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                                            Icon(Icons.Default.Chat, contentDescription = null, tint = Color(0xFF2563EB), modifier = Modifier.size(20.dp))
+                                            Text("Ask Gemini")
+                                        }
+                                    },
+                                    onClick = { showMoreMenu = false; subScreen = "gemini_chat" }
+                                )
+                                DropdownMenuItem(
+                                    text = {
+                                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                                            Icon(Icons.Default.AccountCircle, contentDescription = null, tint = Color(0xFF4338CA), modifier = Modifier.size(20.dp))
+                                            Text("Account")
+                                        }
+                                    },
+                                    onClick = { showMoreMenu = false; subScreen = "account" }
+                                )
                             }
                         }
                     },
@@ -1461,6 +2021,10 @@ fun ScanScreen() {
     var scanResults by remember { mutableStateOf<List<ScanResultItem>>(emptyList()) }
     var manualTicker by remember { mutableStateOf("") }
     var scanProgress by remember { mutableStateOf("") }
+    // Discriminator: which scan button initiated the in-flight request.
+    // Used so the spinner/progress text only renders on the originating button.
+    //   null = idle, "single" / "watchlist" / "trending" otherwise.
+    var activeScan by remember { mutableStateOf<String?>(null) }
     var scanError by remember { mutableStateOf<String?>(null) }
 
     val strategies = listOf("All", "CSPs", "Diagonals", "Verticals", "Long LEAPS")
@@ -1471,6 +2035,11 @@ fun ScanScreen() {
     var showWatchlistDialog by remember { mutableStateOf(false) }
     var showAiKeysDialog by remember { mutableStateOf(false) }
 
+    // Collapsible top-controls panel: gives the results list the full screen
+    // when the user is parsing through scan output. Auto-collapses after a
+    // scan completes; user re-expands by tapping the compact "Scan" pill.
+    var controlsExpanded by remember { mutableStateOf(true) }
+
     // AI cross-validation state
     val aiValidations = remember { mutableStateMapOf<String, AiCrossValidation>() }
     var aiValidatingTickers by remember { mutableStateOf<Set<String>>(emptySet()) }
@@ -1478,6 +2047,9 @@ fun ScanScreen() {
     // Auto-trigger AI validation for Strong Buy results
     LaunchedEffect(scanResults) {
         if (scanResults.isEmpty()) return@LaunchedEffect
+        // Publish to the shared holder so the Gemini chat screen can use the
+        // latest scan as conversation context without re-fetching.
+        LastScanContext.results = scanResults
         if (!AiKeyManager.hasAnyKeys(context)) return@LaunchedEffect
 
         val strongBuys = scanResults.filter { item ->
@@ -1528,13 +2100,33 @@ fun ScanScreen() {
         mutableStateOf(list)
     }
 
-    // Sync watchlist from server on first load
+    // Watchlist sync: push-then-pull on first load.
+    //  - If a previous save failed, watchlist_dirty=true is persisted; on next
+    //    launch we replay the PUT before any pull so local edits aren't lost.
+    //  - The pull from server only happens once the local copy is clean, so
+    //    a stale server list never silently overwrites pending edits.
     LaunchedEffect(Unit) {
+        val dirty = sharedPrefs.getBoolean("watchlist_dirty", false)
+        if (dirty) {
+            try {
+                withContext(Dispatchers.IO) {
+                    apiService.setWatchlist(WatchlistSetRequest(watchlist))
+                }
+                sharedPrefs.edit().putBoolean("watchlist_dirty", false).apply()
+                Log.d("Watchlist", "Replayed pending watchlist save (${watchlist.size} symbols)")
+            } catch (e: Exception) {
+                Log.w("Watchlist", "Pending watchlist save still failing: ${e.message}")
+                // Skip pull — local copy is the source of truth until we manage to push.
+                return@LaunchedEffect
+            }
+        }
         try {
             val serverWatchlist = withContext(Dispatchers.IO) { apiService.getWatchlist() }
             watchlist = serverWatchlist.tickers
             sharedPrefs.edit().putString("watchlist", serverWatchlist.tickers.joinToString(",")).apply()
-        } catch (_: Exception) { /* Use local cache */ }
+        } catch (e: Exception) {
+            Log.w("Watchlist", "getWatchlist failed, using local cache: ${e.message}")
+        }
     }
 
     // Tuner Settings State
@@ -1583,13 +2175,30 @@ fun ScanScreen() {
                         .map { it.trim() }
                     if (newList.isNotEmpty()) {
                         watchlist = newList
-                        sharedPrefs.edit().putString("watchlist", newList.joinToString(",")).apply()
+                        // Mark dirty BEFORE the network call so a process death
+                        // mid-flight is recoverable on the next app launch.
+                        sharedPrefs.edit()
+                            .putString("watchlist", newList.joinToString(","))
+                            .putBoolean("watchlist_dirty", true)
+                            .apply()
                         showWatchlistDialog = false
-                        Toast.makeText(context, "Watchlist updated (${newList.size} symbols)", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(context, "Watchlist updated (${newList.size} symbols) — syncing…", Toast.LENGTH_SHORT).show()
                         // Sync to server
                         scope.launch {
-                            try { withContext(Dispatchers.IO) { apiService.setWatchlist(WatchlistSetRequest(newList)) } }
-                            catch (_: Exception) { }
+                            try {
+                                withContext(Dispatchers.IO) {
+                                    apiService.setWatchlist(WatchlistSetRequest(newList))
+                                }
+                                sharedPrefs.edit().putBoolean("watchlist_dirty", false).apply()
+                                Log.d("Watchlist", "Synced ${newList.size} symbols to server")
+                            } catch (e: Exception) {
+                                Log.e("Watchlist", "Server sync failed: ${e.message}")
+                                Toast.makeText(
+                                    context,
+                                    "Saved locally; server sync failed (\"${friendlyErrorMessage(e)}\"). Will retry on next launch.",
+                                    Toast.LENGTH_LONG
+                                ).show()
+                            }
                         }
                     }
                 }) { Text("Save Watchlist") }
@@ -1601,6 +2210,37 @@ fun ScanScreen() {
     }
 
     Column(modifier = Modifier.fillMaxSize().padding(horizontal = 12.dp, vertical = 8.dp)) {
+        if (!controlsExpanded) {
+            // Compact bar: shown after a scan completes so the results take the
+            // full screen. Tap "Scan" to bring the full controls back.
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(bottom = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Button(
+                    onClick = { controlsExpanded = true },
+                    modifier = Modifier.weight(1f).height(40.dp),
+                    shape = RoundedCornerShape(10.dp),
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+                ) {
+                    Icon(Icons.Default.Search, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text("Scan", style = MaterialTheme.typography.labelLarge)
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Icon(Icons.Default.ExpandMore, contentDescription = "Expand controls", modifier = Modifier.size(16.dp))
+                }
+                if (scanResults.isNotEmpty()) {
+                    Text(
+                        "${scanResults.size} results",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = Color.Gray
+                    )
+                }
+            }
+        }
+
+        if (controlsExpanded) {
         // Strategy Filter & Tuner
         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
             ExposedDropdownMenuBox(
@@ -1670,6 +2310,7 @@ fun ScanScreen() {
                 scope.launch {
                     try {
                         isLoading = true
+                        activeScan = "single"
                         scanResults = emptyList()
                         scanError = null
                         scanProgress = "Scanning ${manualTicker}..."
@@ -1700,6 +2341,8 @@ fun ScanScreen() {
                     } finally {
                         isLoading = false
                         scanProgress = ""
+                        activeScan = null
+                        if (scanResults.isNotEmpty()) controlsExpanded = false
                     }
                 }
             },
@@ -1707,7 +2350,7 @@ fun ScanScreen() {
             enabled = !isLoading,
             shape = RoundedCornerShape(12.dp)
         ) {
-            if (isLoading && scanProgress.contains("Scanning")) {
+            if (activeScan == "single") {
                 CircularProgressIndicator(modifier = Modifier.size(20.dp), color = Color.White, strokeWidth = 2.dp)
                 Spacer(modifier = Modifier.width(8.dp))
                 Text(scanProgress, style = MaterialTheme.typography.labelLarge)
@@ -1727,6 +2370,7 @@ fun ScanScreen() {
                 scope.launch {
                     try {
                         isLoading = true
+                        activeScan = "watchlist"
                         scanResults = emptyList()
                         scanError = null
                         scanProgress = "Starting watchlist scan..."
@@ -1796,6 +2440,8 @@ fun ScanScreen() {
                     } finally {
                         isLoading = false
                         scanProgress = ""
+                        activeScan = null
+                        if (scanResults.isNotEmpty()) controlsExpanded = false
                     }
                 }
             },
@@ -1804,14 +2450,14 @@ fun ScanScreen() {
             shape = RoundedCornerShape(12.dp),
             colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF059669))
         ) {
-            if (isLoading && (scanProgress.contains("Scanning") || scanProgress.contains("Batch") || scanProgress.contains("Starting"))) {
+            if (activeScan == "watchlist") {
                 CircularProgressIndicator(modifier = Modifier.size(20.dp), color = Color.White, strokeWidth = 2.dp)
                 Spacer(modifier = Modifier.width(8.dp))
                 Text(scanProgress, style = MaterialTheme.typography.labelLarge)
             } else {
                 Icon(Icons.Default.Checklist, contentDescription = null, modifier = Modifier.size(18.dp))
                 Spacer(modifier = Modifier.width(6.dp))
-                Text("Scan Watchlist (${watchlist.size} symbols)", style = MaterialTheme.typography.labelLarge)
+                Text("Scan Watchlist — ${watchlist.size}", style = MaterialTheme.typography.labelLarge)
             }
         }
 
@@ -1824,13 +2470,26 @@ fun ScanScreen() {
                 scope.launch {
                     try {
                         isLoading = true
+                        activeScan = "trending"
                         scanResults = emptyList()
                         scanError = null
                         scanProgress = "Fetching trending stocks..."
                         val results = apiService.scanTrending()
-                        scanResults = results
-                        if (results.isEmpty()) {
-                            scanError = "No trending stocks found."
+                        // Filter to actionable picks, then run them through Gemini
+                        // (if a key is configured) so vetoed names are dropped
+                        // before reaching the user's notification shade.
+                        val actionable = TrendingAlerts.postActionableAlertGated(context, results)
+                        // Show actionable picks first; user can still see the rest below.
+                        scanResults = if (actionable.isEmpty()) results
+                                      else actionable + results.filter { r -> actionable.none { it.ticker == r.ticker } }
+                        when {
+                            results.isEmpty() -> scanError = "No trending stocks found."
+                            actionable.isEmpty() -> scanError = "No actionable picks in today's trending list — showing all ${results.size} for reference."
+                            else -> Toast.makeText(
+                                context,
+                                "${actionable.size} actionable trending pick${if (actionable.size > 1) "s" else ""} \u2014 see notification",
+                                Toast.LENGTH_LONG
+                            ).show()
                         }
                     } catch (e: Exception) {
                         Log.e("API_ERROR", "Trending scan failed: ${e.message}")
@@ -1838,6 +2497,8 @@ fun ScanScreen() {
                     } finally {
                         isLoading = false
                         scanProgress = ""
+                        activeScan = null
+                        if (scanResults.isNotEmpty()) controlsExpanded = false
                     }
                 }
             },
@@ -1846,7 +2507,7 @@ fun ScanScreen() {
             shape = RoundedCornerShape(12.dp),
             colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFF59E0B))
         ) {
-            if (isLoading && scanProgress.contains("Fetching")) {
+            if (activeScan == "trending") {
                 CircularProgressIndicator(modifier = Modifier.size(20.dp), color = Color.White, strokeWidth = 2.dp)
                 Spacer(modifier = Modifier.width(8.dp))
                 Text(scanProgress, style = MaterialTheme.typography.labelLarge)
@@ -1876,6 +2537,7 @@ fun ScanScreen() {
                 )
             }
         }
+        } // end if (controlsExpanded)
 
         Spacer(modifier = Modifier.height(6.dp))
 
@@ -2548,13 +3210,16 @@ fun AiGuruScreen() {
     var ticker by remember { mutableStateOf("") }
     var selectedType by remember { mutableStateOf("CSP") }
     var expandedType by remember { mutableStateOf(false) }
-    val typeOptions = listOf("CSP", "Sell Call", "Vertical", "Diagonal", "Long LEAPS")
+    val typeOptions = listOf("CSP", "Sell Call", "Vertical", "Diagonal", "Long LEAPS", "CSP-Funded Call")
 
     var strike by remember { mutableStateOf("") }
     var strikeSell by remember { mutableStateOf("") }
     var expiry by remember { mutableStateOf("") }
     var expirySell by remember { mutableStateOf("") }
     var premium by remember { mutableStateOf("") }
+    // Second premium field used only by the CSP-Funded Call combo, which
+    // takes a call premium AND a put premium on a single shared expiry.
+    var premiumSell by remember { mutableStateOf("") }
 
     var isLoading by remember { mutableStateOf(false) }
     var response by remember { mutableStateOf<BacktestResponse?>(null) }
@@ -2599,6 +3264,8 @@ fun AiGuruScreen() {
 
     val isSpread = selectedType == "Vertical" || selectedType == "Diagonal"
     val isDiagonal = selectedType == "Diagonal"
+    val isCfCombo = selectedType == "CSP-Funded Call"
+    val isTwoStrikes = isSpread || isCfCombo
 
     // Focus requesters for field navigation
     val strikeFocus = remember { FocusRequester() }
@@ -2606,6 +3273,7 @@ fun AiGuruScreen() {
     val expiryFocus = remember { FocusRequester() }
     val expirySellFocus = remember { FocusRequester() }
     val premiumFocus = remember { FocusRequester() }
+    val premiumSellFocus = remember { FocusRequester() }
 
     // Submit function
     fun submitForm() {
@@ -2625,6 +3293,67 @@ fun AiGuruScreen() {
                 return
             }
         } else null
+
+        // CSP-Funded Call combo: validate both legs are present, then run two
+        // parallel backtests (long-call BUY + CSP SELL on a shared expiry) and
+        // merge into a single synthetic verdict.
+        if (isCfCombo) {
+            val callStrike = strike.toDoubleOrNull()
+            val putStrike = strikeSell.toDoubleOrNull()
+            val callPrem = premium.toDoubleOrNull()
+            val putPrem = premiumSell.toDoubleOrNull()
+            if (normExpiry == null) {
+                errorMessage = "CSP-Funded Call requires a shared expiry date."
+                return
+            }
+            if (callStrike == null || putStrike == null || callPrem == null || putPrem == null) {
+                errorMessage = "CSP-Funded Call requires call strike, put strike, call premium, and put premium."
+                return
+            }
+            if (putStrike >= callStrike) {
+                errorMessage = "Put strike (${putStrike}) should be below call strike (${callStrike}) for this combo."
+                return
+            }
+            isLoading = true
+            errorMessage = null
+            response = null
+            scope.launch {
+                try {
+                    val callReq = BacktestRequest(
+                        ticker = ticker, strategy = "long_leaps", action = "buy",
+                        strike = callStrike, expiry = normExpiry, premium = callPrem
+                    )
+                    val putReq = BacktestRequest(
+                        ticker = ticker, strategy = "csp", action = "sell",
+                        strike = putStrike, expiry = normExpiry, premium = putPrem
+                    )
+                    val (callRes, putRes) = withContext(Dispatchers.IO) {
+                        val c = async { runCatching { apiService.getBacktest(callReq) } }
+                        val p = async { runCatching { apiService.getBacktest(putReq) } }
+                        c.await() to p.await()
+                    }
+                    val callOk = callRes.getOrNull()
+                    val putOk = putRes.getOrNull()
+                    if (callOk == null && putOk == null) {
+                        errorMessage = friendlyErrorMessage(
+                            (callRes.exceptionOrNull() ?: putRes.exceptionOrNull()) as? Exception
+                                ?: Exception("Both legs failed")
+                        )
+                    } else {
+                        response = mergeCfComboResponses(
+                            callRes = callOk, putRes = putOk,
+                            callStrike = callStrike, putStrike = putStrike,
+                            callPrem = callPrem, putPrem = putPrem, expiry = normExpiry
+                        )
+                    }
+                } catch (e: Exception) {
+                    errorMessage = friendlyErrorMessage(e)
+                } finally {
+                    isLoading = false
+                }
+            }
+            return
+        }
 
         isLoading = true
         errorMessage = null
@@ -2716,20 +3445,28 @@ fun AiGuruScreen() {
                 OutlinedTextField(
                     value = strike,
                     onValueChange = { strike = it },
-                    label = { Text(if (isSpread) "Buy Leg Strike" else "Strike Price") },
+                    label = {
+                        Text(
+                            when {
+                                isCfCombo -> "Call Strike (buy leg)"
+                                isSpread -> "Buy Leg Strike"
+                                else -> "Strike Price"
+                            }
+                        )
+                    },
                     placeholder = { Text("e.g. 200") },
                     singleLine = true,
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal, imeAction = ImeAction.Next),
-                    keyboardActions = KeyboardActions(onNext = { if (isSpread) strikeSellFocus.requestFocus() else expiryFocus.requestFocus() }),
+                    keyboardActions = KeyboardActions(onNext = { if (isTwoStrikes) strikeSellFocus.requestFocus() else expiryFocus.requestFocus() }),
                     modifier = Modifier.fillMaxWidth().focusRequester(strikeFocus)
                 )
             }
-            if (isSpread) {
+            if (isTwoStrikes) {
                 item {
                     OutlinedTextField(
                         value = strikeSell,
                         onValueChange = { strikeSell = it },
-                        label = { Text("Sell Leg Strike") },
+                        label = { Text(if (isCfCombo) "Put Strike (sell leg)" else "Sell Leg Strike") },
                         placeholder = { Text("e.g. 250") },
                         singleLine = true,
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal, imeAction = ImeAction.Next),
@@ -2742,7 +3479,15 @@ fun AiGuruScreen() {
                 OutlinedTextField(
                     value = expiry,
                     onValueChange = { expiry = it },
-                    label = { Text(if (isDiagonal) "Buy Leg Expiry" else "Expiry") },
+                    label = {
+                        Text(
+                            when {
+                                isDiagonal -> "Buy Leg Expiry"
+                                isCfCombo -> "Shared Expiry (call + put)"
+                                else -> "Expiry"
+                            }
+                        )
+                    },
                     placeholder = { Text("e.g. 2026-06-18 or 18Jun2026") },
                     singleLine = true,
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
@@ -2768,13 +3513,48 @@ fun AiGuruScreen() {
                 OutlinedTextField(
                     value = premium,
                     onValueChange = { premium = it },
-                    label = { Text(if (isSpread) "Net Debit" else "Premium") },
+                    label = {
+                        Text(
+                            when {
+                                isCfCombo -> "Call Premium (paid)"
+                                isSpread -> "Net Debit"
+                                else -> "Premium"
+                            }
+                        )
+                    },
                     placeholder = { Text("e.g. 5.00") },
                     singleLine = true,
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal, imeAction = ImeAction.Done),
-                    keyboardActions = KeyboardActions(onDone = { submitForm() }),
+                    keyboardOptions = KeyboardOptions(
+                        keyboardType = KeyboardType.Decimal,
+                        imeAction = if (isCfCombo) ImeAction.Next else ImeAction.Done
+                    ),
+                    keyboardActions = KeyboardActions(
+                        onNext = { if (isCfCombo) premiumSellFocus.requestFocus() },
+                        onDone = { submitForm() }
+                    ),
                     modifier = Modifier.fillMaxWidth().focusRequester(premiumFocus)
                 )
+            }
+            if (isCfCombo) {
+                item {
+                    OutlinedTextField(
+                        value = premiumSell,
+                        onValueChange = { premiumSell = it },
+                        label = { Text("Put Premium (received)") },
+                        placeholder = { Text("e.g. 3.10") },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal, imeAction = ImeAction.Done),
+                        keyboardActions = KeyboardActions(onDone = { submitForm() }),
+                        modifier = Modifier.fillMaxWidth().focusRequester(premiumSellFocus)
+                    )
+                }
+                item {
+                    Text(
+                        "Tip: best on high-IV trending names. Net debit ≈ call premium − put premium.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Color.Gray
+                    )
+                }
             }
 
             // Ask AI Guru Button
@@ -3817,7 +4597,12 @@ fun AddManualPositionDialog(onDismiss: () -> Unit, onSave: (TradeEntry) -> Unit)
 @Composable
 fun NotificationsScreen() {
     val context = LocalContext.current
-    val notifications = remember { NotificationCache.load(context) }
+    var refreshTick by remember { mutableStateOf(0) }
+    val notifications = remember(refreshTick) { NotificationCache.load(context) }
+    var triggering by remember { mutableStateOf(false) }
+
+    // Re-load when user returns to this tab
+    LaunchedEffect(Unit) { refreshTick++ }
 
     Column(modifier = Modifier.fillMaxSize().padding(horizontal = 12.dp, vertical = 8.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -3830,6 +4615,44 @@ fun NotificationsScreen() {
             Spacer(modifier = Modifier.width(8.dp))
             Text("Notification History", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
         }
+        Spacer(modifier = Modifier.height(8.dp))
+
+        // Manual trigger button — runs the same pipeline as the 6:50 AM daily scan.
+        Button(
+            onClick = {
+                triggering = true
+                val req = OneTimeWorkRequestBuilder<DailyRecommendationWorker>()
+                    .setConstraints(
+                        Constraints.Builder()
+                            .setRequiredNetworkType(NetworkType.CONNECTED)
+                            .build()
+                    )
+                    .addTag("DailyRecommendation_manual")
+                    .build()
+                WorkManager.getInstance(context).enqueueUniqueWork(
+                    "DailyRecommendation_manual",
+                    ExistingWorkPolicy.REPLACE,
+                    req
+                )
+                Toast.makeText(
+                    context,
+                    "Scanning watchlist + trending + portfolio. Notification will appear shortly.",
+                    Toast.LENGTH_LONG
+                ).show()
+                // Reset the spinner shortly after; the worker runs in background.
+                triggering = false
+                refreshTick++
+            },
+            modifier = Modifier.fillMaxWidth().height(48.dp),
+            enabled = !triggering,
+            shape = RoundedCornerShape(12.dp),
+            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF7C3AED))
+        ) {
+            Icon(Icons.Default.NotificationsActive, contentDescription = null, modifier = Modifier.size(18.dp))
+            Spacer(modifier = Modifier.width(6.dp))
+            Text("Send Today's Picks Now", style = MaterialTheme.typography.labelLarge)
+        }
+
         Spacer(modifier = Modifier.height(12.dp))
 
         if (notifications.isEmpty()) {
@@ -3839,7 +4662,7 @@ fun NotificationsScreen() {
                     Spacer(modifier = Modifier.height(16.dp))
                     Text("No notifications yet", style = MaterialTheme.typography.titleMedium, color = Color.Gray)
                     Text(
-                        "Daily recommendations will appear here at 6:50 AM on market days.",
+                        "Daily recommendations will appear here at 6:45 AM on market days.",
                         style = MaterialTheme.typography.bodySmall,
                         color = Color.Gray,
                         textAlign = TextAlign.Center,
