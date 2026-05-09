@@ -538,6 +538,13 @@ object UserSession {
  */
 object LastScanContext {
     @Volatile var results: List<ScanResultItem> = emptyList()
+    /** AI cross-validation verdicts the user is currently looking at, keyed
+     *  by ticker. Surfaced to Gemini so it can reason about the same AI
+     *  consensus the user sees on screen. */
+    @Volatile var aiValidations: Map<String, AiCrossValidation> = emptyMap()
+    /** Active recommendation filter chip ("All", "STRONG BUY", etc.) so
+     *  Gemini knows the user is looking at a filtered subset. */
+    @Volatile var activeFilter: String? = null
 }
 
 private val authInterceptor = Interceptor { chain ->
@@ -2329,6 +2336,18 @@ fun ScanScreen() {
         }
     }
 
+    // Mirror the live AI validation map into LastScanContext so the Gemini
+    // ask-overlay can include current AI verdicts in its prompt context.
+    LaunchedEffect(aiValidations.size) {
+        LastScanContext.aiValidations = aiValidations.toMap()
+    }
+
+    // Floating Gemini ask-overlay state. When true the bottom half of the
+    // results screen is occupied by an embedded GeminiChatPanel; the top
+    // half keeps the scan results scrollable so the user can cross-reference.
+    var askOverlayOpen by remember { mutableStateOf(false) }
+    val chatPanelState = rememberGeminiChatPanelState()
+
     // Persisted Watchlist State
     var watchlist by remember {
         val saved = sharedPrefs.getString("watchlist", null)
@@ -2894,6 +2913,10 @@ fun ScanScreen() {
                     recommendationBucket(it.stockRecommendation, it.overall) == recFilter
                 }
             }
+            // Mirror the active filter to the shared context so the Gemini
+            // ask-overlay can mention "you're looking at the BUY filter".
+            LaunchedEffect(recFilter) { LastScanContext.activeFilter = recFilter }
+
             if (displayedResults.isEmpty()) {
                 Text(
                     "No ${recFilter} results.",
@@ -2902,14 +2925,74 @@ fun ScanScreen() {
                     modifier = Modifier.padding(8.dp)
                 )
             }
-            LazyColumn(modifier = Modifier.weight(1f)) {
-                items(displayedResults) { item ->
-                    ScanResultCard(
-                        item, selectedStrategy, scope, context,
-                        aiValidation = aiValidations[item.ticker],
-                        isAiValidating = aiValidatingTickers.contains(item.ticker),
-                        onRunAi = { onRunAi(item) }
-                    )
+
+            // Wrap results + chat overlay in a Box so the floating Gemini
+            // FAB can sit on top of the results list. When the overlay is
+            // open the available vertical space splits 50/50: results on
+            // top (still scrollable), chat on bottom (scrollable + input).
+            Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
+                Column(modifier = Modifier.fillMaxSize()) {
+                    LazyColumn(modifier = Modifier.weight(if (askOverlayOpen) 0.5f else 1f)) {
+                        items(displayedResults) { item ->
+                            ScanResultCard(
+                                item, selectedStrategy, scope, context,
+                                aiValidation = aiValidations[item.ticker],
+                                isAiValidating = aiValidatingTickers.contains(item.ticker),
+                                onRunAi = { onRunAi(item) }
+                            )
+                        }
+                    }
+                    if (askOverlayOpen) {
+                        // Drag handle / header for the chat panel.
+                        Surface(
+                            color = Color(0xFF2563EB),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text("🤖", style = MaterialTheme.typography.labelLarge)
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(
+                                    "Ask Gemini about your results",
+                                    color = Color.White,
+                                    fontWeight = FontWeight.Bold,
+                                    style = MaterialTheme.typography.labelMedium,
+                                    modifier = Modifier.weight(1f)
+                                )
+                                if (chatPanelState.messages.isNotEmpty()) {
+                                    TextButton(onClick = { chatPanelState.clear() }) {
+                                        Text("Clear", color = Color.White, style = MaterialTheme.typography.labelSmall)
+                                    }
+                                }
+                                IconButton(
+                                    onClick = { askOverlayOpen = false },
+                                    modifier = Modifier.size(28.dp)
+                                ) {
+                                    Icon(Icons.Default.Close, contentDescription = "Close", tint = Color.White, modifier = Modifier.size(18.dp))
+                                }
+                            }
+                        }
+                        GeminiChatPanel(
+                            state = chatPanelState,
+                            modifier = Modifier.weight(0.5f).fillMaxWidth(),
+                            compact = true
+                        )
+                    }
+                }
+                // Floating Gemini button (only when chat is closed).
+                if (!askOverlayOpen) {
+                    FloatingActionButton(
+                        onClick = { askOverlayOpen = true },
+                        containerColor = Color(0xFF2563EB),
+                        contentColor = Color.White,
+                        modifier = Modifier
+                            .align(Alignment.BottomEnd)
+                            .padding(end = 16.dp, bottom = 16.dp)
+                    ) {
+                        Icon(Icons.Default.Chat, contentDescription = "Ask Gemini")
+                    }
                 }
             }
         }

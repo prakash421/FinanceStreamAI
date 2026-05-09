@@ -880,67 +880,10 @@ private fun AccountRow(label: String, value: String, mono: Boolean = false) {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun GeminiChatScreen(onBack: () -> Unit) {
-    val context = androidx.compose.ui.platform.LocalContext.current
-    val scope = rememberCoroutineScope()
-    val keyConfigured = remember { GeminiChat.isEnabled(context) }
-
-    var input by remember { mutableStateOf("") }
-    val messages = remember { mutableStateListOf<GeminiChat.Message>() }
-    var sending by remember { mutableStateOf(false) }
-    var lastError by remember { mutableStateOf<String?>(null) }
-    var includeScanContext by remember { mutableStateOf(LastScanContext.results.isNotEmpty()) }
-
-    val listState = androidx.compose.foundation.lazy.rememberLazyListState()
-
-    // Auto-scroll to the newest message after each addition.
-    LaunchedEffect(messages.size, sending) {
-        val lastIdx = (messages.size - 1 + (if (sending) 1 else 0)).coerceAtLeast(0)
-        if (lastIdx > 0) listState.animateScrollToItem(lastIdx)
-    }
-
-    fun buildScanContext(): String? {
-        val results = LastScanContext.results
-        if (!includeScanContext || results.isEmpty()) return null
-        // Hand the model a compact view of the user's most recent scan so
-        // follow-ups like "tell me about NVDA" or "which is safest?" can
-        // reference real data instead of training-set memory.
-        val top = results.take(20)
-        val rows = top.joinToString("\n") { item ->
-            val rsi = item.rsi?.let { "%.0f".format(it) } ?: "?"
-            val rec = item.stockRecommendation ?: item.overall ?: "-"
-            val sec = item.sector?.takeIf { it.isNotBlank() } ?: "-"
-            val csp = item.csps?.firstOrNull()?.let { " csp:\$${"%.0f".format(it.strike)}@\$${"%.2f".format(it.premium)}" } ?: ""
-            val leap = item.longLeaps?.firstOrNull()?.let { " leap:\$${"%.0f".format(it.strike)} exp=${it.expiry}" } ?: ""
-            "${item.ticker} \$${"%.2f".format(item.price)} RSI=$rsi sec=$sec rec=$rec$csp$leap"
-        }
-        return """You are an in-app assistant for a retail options-trading app called StockWiz AI. The user has just run a scan; here are the top ${top.size} results (live data from the backend — do NOT invent prices or strikes from memory):
-
-$rows
-
-Answer the user's questions concisely. When they reference a ticker that's in the list above, ground your answer in those numbers. When they ask something outside the scan, say so. Keep replies under 150 words unless asked for detail."""
-    }
-
-    fun send() {
-        val text = input.trim()
-        if (text.isEmpty() || sending) return
-        input = ""
-        lastError = null
-        // Snapshot history BEFORE adding the new user turn (the API helper
-        // appends it server-side).
-        val historySnapshot = messages.toList()
-        messages.add(GeminiChat.Message(GeminiChat.Role.USER, text))
-        sending = true
-        scope.launch {
-            val reply = GeminiChat.ask(context, historySnapshot, text, systemContext = buildScanContext())
-            sending = false
-            when (reply) {
-                is GeminiChat.Reply.Ok -> messages.add(GeminiChat.Message(GeminiChat.Role.MODEL, reply.text))
-                is GeminiChat.Reply.Error -> lastError = reply.message
-                GeminiChat.Reply.NoKey -> lastError = "Gemini key not configured. Add it in the AI keys dialog on first launch."
-            }
-        }
-    }
-
+    // Hosts the chat panel inside a full-screen Scaffold with TopAppBar.
+    // The actual chat UI lives in [GeminiChatPanel] so it can also be
+    // embedded in split-screen overlays (e.g. on the scan results screen).
+    val panelState = rememberGeminiChatPanelState()
     Scaffold(
         topBar = {
             TopAppBar(
@@ -951,78 +894,164 @@ Answer the user's questions concisely. When they reference a ticker that's in th
                     }
                 },
                 actions = {
-                    if (messages.isNotEmpty()) {
-                        TextButton(onClick = { messages.clear(); lastError = null }) {
-                            Text("Clear")
-                        }
+                    if (panelState.messages.isNotEmpty()) {
+                        TextButton(onClick = { panelState.clear() }) { Text("Clear") }
                     }
                 }
             )
         }
     ) { padding ->
-        Column(
-            modifier = Modifier
-                .padding(padding)
-                .fillMaxSize()
-        ) {
-            // Context banner — shows whether scan results are being shared.
-            if (LastScanContext.results.isNotEmpty()) {
-                Surface(
-                    modifier = Modifier.fillMaxWidth(),
-                    color = if (includeScanContext) Color(0xFFEFF6FF) else Color(0xFFF1F5F9)
+        GeminiChatPanel(
+            state = panelState,
+            modifier = Modifier.padding(padding).fillMaxSize()
+        )
+    }
+}
+
+/** Hoisted state for [GeminiChatPanel] so multiple call sites (full screen,
+ *  split overlay) can share or independently own a chat session. */
+class GeminiChatPanelState {
+    val messages = mutableStateListOf<GeminiChat.Message>()
+    var input by mutableStateOf("")
+    var sending by mutableStateOf(false)
+    var lastError by mutableStateOf<String?>(null)
+    var includeScanContext by mutableStateOf(LastScanContext.results.isNotEmpty())
+    fun clear() { messages.clear(); lastError = null }
+}
+
+@Composable
+fun rememberGeminiChatPanelState(): GeminiChatPanelState = remember { GeminiChatPanelState() }
+
+/**
+ * The reusable Gemini chat UI: context banner, message list, error banner,
+ * input bar. Used standalone in [GeminiChatScreen] and embedded in the
+ * split-screen overlay on the scan results screen.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun GeminiChatPanel(
+    state: GeminiChatPanelState,
+    modifier: Modifier = Modifier,
+    compact: Boolean = false
+) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val scope = rememberCoroutineScope()
+    val keyConfigured = remember { GeminiChat.isEnabled(context) }
+    val listState = androidx.compose.foundation.lazy.rememberLazyListState()
+
+    // Auto-scroll to the newest message after each addition.
+    LaunchedEffect(state.messages.size, state.sending) {
+        val lastIdx = (state.messages.size - 1 + (if (state.sending) 1 else 0)).coerceAtLeast(0)
+        if (lastIdx > 0) listState.animateScrollToItem(lastIdx)
+    }
+
+    fun buildScanContext(): String? {
+        val results = LastScanContext.results
+        if (!state.includeScanContext || results.isEmpty()) return null
+        // Compact view of the user's most recent scan + any AI verdicts the
+        // user is currently looking at, so follow-ups like "tell me about
+        // NVDA" or "why did AI flag it MIXED?" can reference real data.
+        val top = results.take(20)
+        val ai = LastScanContext.aiValidations
+        val rows = top.joinToString("\n") { item ->
+            val rsi = item.rsi?.let { "%.0f".format(it) } ?: "?"
+            val rec = item.stockRecommendation ?: item.overall ?: "-"
+            val sec = item.sector?.takeIf { it.isNotBlank() } ?: "-"
+            val csp = item.csps?.firstOrNull()?.let { " csp:\$${"%.0f".format(it.strike)}@\$${"%.2f".format(it.premium)}" } ?: ""
+            val leap = item.longLeaps?.firstOrNull()?.let { " leap:\$${"%.0f".format(it.strike)} exp=${it.expiry}" } ?: ""
+            val aiTag = ai[item.ticker]?.let { " ai=${it.consensus}(${it.agreementPct}%)" } ?: ""
+            "${item.ticker} \$${"%.2f".format(item.price)} RSI=$rsi sec=$sec rec=$rec$csp$leap$aiTag"
+        }
+        val filterNote = LastScanContext.activeFilter?.takeIf { it != "All" }?.let {
+            "\n\nThe user has filtered the list to show only $it results."
+        } ?: ""
+        return """You are an in-app assistant for a retail options-trading app called StockWiz AI. The user has just run a scan; here are the top ${top.size} results currently visible on their screen (live data from the backend — do NOT invent prices or strikes from memory):
+
+$rows$filterNote
+
+Answer the user's questions concisely. When they reference a ticker that's in the list above, ground your answer in those numbers. When they ask something outside the scan, say so. Keep replies under 150 words unless asked for detail."""
+    }
+
+    fun send() {
+        val text = state.input.trim()
+        if (text.isEmpty() || state.sending) return
+        state.input = ""
+        state.lastError = null
+        val historySnapshot = state.messages.toList()
+        state.messages.add(GeminiChat.Message(GeminiChat.Role.USER, text))
+        state.sending = true
+        scope.launch {
+            val reply = GeminiChat.ask(context, historySnapshot, text, systemContext = buildScanContext())
+            state.sending = false
+            when (reply) {
+                is GeminiChat.Reply.Ok -> state.messages.add(GeminiChat.Message(GeminiChat.Role.MODEL, reply.text))
+                is GeminiChat.Reply.Error -> state.lastError = reply.message
+                GeminiChat.Reply.NoKey -> state.lastError = "Gemini key not configured. Add it in the AI keys dialog on first launch."
+            }
+        }
+    }
+
+    Column(modifier = modifier) {
+        // Context banner — shows whether scan results are being shared.
+        if (LastScanContext.results.isNotEmpty()) {
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                color = if (state.includeScanContext) Color(0xFFEFF6FF) else Color(0xFFF1F5F9)
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp, vertical = if (compact) 4.dp else 8.dp),
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 16.dp, vertical = 8.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Icon(
-                            if (includeScanContext) Icons.Default.Link else Icons.Default.LinkOff,
-                            contentDescription = null,
-                            tint = if (includeScanContext) Color(0xFF2563EB) else Color(0xFF64748B),
-                            modifier = Modifier.size(18.dp)
-                        )
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text(
-                            if (includeScanContext)
-                                "Sharing your last scan (${LastScanContext.results.size.coerceAtMost(20)} tickers) with Gemini"
-                            else
-                                "Scan context off — Gemini answers from general knowledge only",
-                            style = MaterialTheme.typography.labelMedium,
-                            color = Color(0xFF334155),
-                            modifier = Modifier.weight(1f)
-                        )
-                        Switch(
-                            checked = includeScanContext,
-                            onCheckedChange = { includeScanContext = it }
-                        )
-                    }
+                    Icon(
+                        if (state.includeScanContext) Icons.Default.Link else Icons.Default.LinkOff,
+                        contentDescription = null,
+                        tint = if (state.includeScanContext) Color(0xFF2563EB) else Color(0xFF64748B),
+                        modifier = Modifier.size(if (compact) 14.dp else 18.dp)
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        if (state.includeScanContext)
+                            "Sharing ${LastScanContext.results.size.coerceAtMost(20)} scan results with Gemini"
+                        else
+                            "Scan context off",
+                        style = if (compact) MaterialTheme.typography.labelSmall else MaterialTheme.typography.labelMedium,
+                        color = Color(0xFF334155),
+                        modifier = Modifier.weight(1f)
+                    )
+                    Switch(
+                        checked = state.includeScanContext,
+                        onCheckedChange = { state.includeScanContext = it }
+                    )
                 }
             }
+        }
 
-            // Message list
-            if (messages.isEmpty() && !sending) {
-                Column(
-                    modifier = Modifier
-                        .weight(1f)
-                        .fillMaxWidth()
-                        .padding(24.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.Center
-                ) {
-                    Icon(Icons.Default.Chat, contentDescription = null, tint = Color(0xFF93C5FD), modifier = Modifier.size(64.dp))
-                    Spacer(modifier = Modifier.height(12.dp))
-                    Text(
-                        if (keyConfigured) "Ask Gemini anything" else "Add your Gemini API key to chat",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.SemiBold,
-                        color = Color(0xFF334155)
-                    )
+        // Message list / empty state
+        if (state.messages.isEmpty() && !state.sending) {
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth()
+                    .padding(if (compact) 12.dp else 24.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.Center
+            ) {
+                Icon(Icons.Default.Chat, contentDescription = null, tint = Color(0xFF93C5FD), modifier = Modifier.size(if (compact) 36.dp else 64.dp))
+                Spacer(modifier = Modifier.height(8.dp))
+                Text(
+                    if (keyConfigured) "Ask Gemini about your scan results" else "Add your Gemini API key to chat",
+                    style = if (compact) MaterialTheme.typography.bodyMedium else MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    color = Color(0xFF334155),
+                    textAlign = TextAlign.Center
+                )
+                if (!compact) {
                     Spacer(modifier = Modifier.height(8.dp))
                     Text(
                         if (keyConfigured)
-                            "Try: \"Explain CSPs in plain English\", \"Which of my picks has the best risk/reward?\", or \"How do I roll a losing position?\""
+                            "Try: \"Which is safest?\", \"Why did AI flag NVDA?\", \"Compare TSLA vs AMD\""
                         else
                             "Open the More menu → first-launch AI keys prompt to paste your Gemini key.",
                         style = MaterialTheme.typography.bodyMedium,
@@ -1030,70 +1059,70 @@ Answer the user's questions concisely. When they reference a ticker that's in th
                         textAlign = TextAlign.Center
                     )
                 }
-            } else {
-                LazyColumn(
-                    state = listState,
-                    modifier = Modifier
-                        .weight(1f)
-                        .fillMaxWidth(),
-                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 12.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    items(messages) { msg -> ChatBubble(msg) }
-                    if (sending) item { TypingIndicator() }
-                }
             }
-
-            // Error banner
-            lastError?.let { err ->
-                Surface(
-                    modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),
-                    color = Color(0xFFFEE2E2),
-                    shape = RoundedCornerShape(8.dp)
-                ) {
-                    Text(
-                        "Gemini error: $err",
-                        modifier = Modifier.padding(12.dp),
-                        color = Color(0xFF991B1B),
-                        style = MaterialTheme.typography.bodySmall
-                    )
-                }
-            }
-
-            // Input bar
-            Surface(
-                modifier = Modifier.fillMaxWidth(),
-                shadowElevation = 4.dp,
-                color = MaterialTheme.colorScheme.surface
+        } else {
+            LazyColumn(
+                state = listState,
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth(),
+                contentPadding = PaddingValues(horizontal = 12.dp, vertical = if (compact) 6.dp else 12.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp)
             ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically
+                items(state.messages) { msg -> ChatBubble(msg) }
+                if (state.sending) item { TypingIndicator() }
+            }
+        }
+
+        // Error banner
+        state.lastError?.let { err ->
+            Surface(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),
+                color = Color(0xFFFEE2E2),
+                shape = RoundedCornerShape(8.dp)
+            ) {
+                Text(
+                    "Gemini error: $err",
+                    modifier = Modifier.padding(10.dp),
+                    color = Color(0xFF991B1B),
+                    style = MaterialTheme.typography.bodySmall
+                )
+            }
+        }
+
+        // Input bar
+        Surface(
+            modifier = Modifier.fillMaxWidth(),
+            shadowElevation = 4.dp,
+            color = MaterialTheme.colorScheme.surface
+        ) {
+            Row(
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = if (compact) 6.dp else 8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                OutlinedTextField(
+                    value = state.input,
+                    onValueChange = { state.input = it },
+                    modifier = Modifier.weight(1f),
+                    placeholder = { Text("Ask anything…") },
+                    enabled = !state.sending && keyConfigured,
+                    maxLines = if (compact) 2 else 4,
+                    shape = RoundedCornerShape(20.dp)
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                FilledIconButton(
+                    onClick = ::send,
+                    enabled = state.input.isNotBlank() && !state.sending && keyConfigured,
+                    colors = IconButtonDefaults.filledIconButtonColors(containerColor = Color(0xFF2563EB))
                 ) {
-                    OutlinedTextField(
-                        value = input,
-                        onValueChange = { input = it },
-                        modifier = Modifier.weight(1f),
-                        placeholder = { Text("Ask anything…") },
-                        enabled = !sending && keyConfigured,
-                        maxLines = 4,
-                        shape = RoundedCornerShape(20.dp)
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    FilledIconButton(
-                        onClick = ::send,
-                        enabled = input.isNotBlank() && !sending && keyConfigured,
-                        colors = IconButtonDefaults.filledIconButtonColors(containerColor = Color(0xFF2563EB))
-                    ) {
-                        if (sending) {
-                            CircularProgressIndicator(
-                                modifier = Modifier.size(20.dp),
-                                strokeWidth = 2.dp,
-                                color = Color.White
-                            )
-                        } else {
-                            Icon(Icons.Default.Send, contentDescription = "Send", tint = Color.White)
-                        }
+                    if (state.sending) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(20.dp),
+                            strokeWidth = 2.dp,
+                            color = Color.White
+                        )
+                    } else {
+                        Icon(Icons.Default.Send, contentDescription = "Send", tint = Color.White)
                     }
                 }
             }
